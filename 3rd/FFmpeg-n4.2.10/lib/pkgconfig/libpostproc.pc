@@ -1,0 +1,14 @@
+prefix=/home/wddkxg/ffmpeg/build/ffmpeg-4.2
+exec_prefix=${prefix}
+libdir=/home/wddkxg/ffmpeg/build/ffmpeg-4.2/lib
+includedir=/home/wddkxg/ffmpeg/build/ffmpeg-4.2/include
+
+Name: libpostproc
+Description: FFmpeg postprocessing library
+Version: 55.5.100
+Requires: 
+Requires.private: libavutil >= 56.31.100
+Conflicts:
+Libs: -L${libdir}  -lpostproc 
+Libs.private: -lm
+Cflags: -I${includedir}
