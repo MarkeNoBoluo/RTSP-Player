@@ -108,14 +108,20 @@ void AudioWorker::start() {
             }
 
             int actualSize = converted * TARGET_CHANNELS * 2;
-            qint64 written = m_device->write(reinterpret_cast<const char*>(dstBuf), actualSize);
-            av_free(dstBuf);
 
-            if (!hasAudio && written > 0) {
-                hasAudio = true;
-                LOG_INFO("Audio playback started: first %lld bytes, queue=%d",
-                         written, m_queue->size());
+            while (m_running) {
+                qint64 written = m_device->write(reinterpret_cast<const char*>(dstBuf), actualSize);
+                if (written == actualSize) {
+                    if (!hasAudio) {
+                        hasAudio = true;
+                        LOG_INFO("Audio started: first %lld bytes, queue=%d", written, m_queue->size());
+                    }
+                    break;
+                }
+                if (written < 0) break;
+                QThread::msleep(1);
             }
+            av_free(dstBuf);
 
             int64_t pts = frame->pts;
             if (pts == AV_NOPTS_VALUE) pts = frame->pkt_dts;

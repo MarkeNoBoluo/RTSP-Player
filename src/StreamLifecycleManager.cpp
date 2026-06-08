@@ -261,7 +261,7 @@ void StreamLifecycleManager::startThreads() {
         AVRational audioTimeBase = m_audioStream ? m_audioStream->time_base : AVRational{1, 90000};
 
         m_audioPullDevice = new AudioPullDevice(200, this);
-        m_audioPullDevice->open(QIODevice::ReadOnly);
+        m_audioPullDevice->open(QIODevice::ReadWrite);
 
         QAudioFormat format;
         format.setSampleRate(48000);
@@ -272,14 +272,12 @@ void StreamLifecycleManager::startThreads() {
         format.setSampleType(QAudioFormat::SignedInt);
 
         QAudioDeviceInfo info = QAudioDeviceInfo::defaultOutputDevice();
-        if (info.isFormatSupported(format)) {
-            m_audioOutput = new QAudioOutput(info, format, this);
-            m_audioOutput->setBufferSize(4096);
-            m_audioOutput->start(m_audioPullDevice);
-            LOG_INFO("Audio output started: 48000Hz/stereo/s16 (pull mode)");
-        } else {
-            LOG_ERROR("Audio format not supported, audio disabled");
-        }
+        format = info.nearestFormat(format);
+        m_audioOutput = new QAudioOutput(info, format, this);
+        m_audioOutput->setBufferSize(4096);
+        m_audioOutput->start(m_audioPullDevice);
+        LOG_INFO("Audio output started: %dHz/%dch/s%d (pull mode)",
+                 format.sampleRate(), format.channelCount(), format.sampleSize());
 
         m_audioThread = new QThread(this);
         m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
