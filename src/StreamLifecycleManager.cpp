@@ -15,6 +15,7 @@
 #include <QAudioOutput>
 #include <QAudioFormat>
 #include <QAudioDeviceInfo>
+#include <QAudio>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -272,6 +273,17 @@ void StreamLifecycleManager::startThreads() {
         format.setSampleType(QAudioFormat::SignedInt);
 
         QAudioDeviceInfo info = QAudioDeviceInfo::defaultOutputDevice();
+        if (info.deviceName().isEmpty() || info.deviceName() == "null") {
+            // default device may be null even when devices exist — enumerate all
+            QList<QAudioDeviceInfo> devices = QAudioDeviceInfo::availableDevices(QAudio::AudioOutput);
+            for (const auto& dev : devices) {
+                if (!dev.deviceName().isEmpty() && dev.deviceName() != "null") {
+                    info = dev;
+                    LOG_INFO("Audio device found: %s", dev.deviceName().toUtf8().constData());
+                    break;
+                }
+            }
+        }
         if (info.deviceName().isEmpty() || info.deviceName() == "null") {
             LOG_WARN("No audio output device, audio disabled");
             delete m_audioPullDevice;
