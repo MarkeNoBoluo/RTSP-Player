@@ -272,13 +272,28 @@ void StreamLifecycleManager::startThreads() {
         format.setSampleType(QAudioFormat::SignedInt);
 
         QAudioDeviceInfo info = QAudioDeviceInfo::defaultOutputDevice();
-        format = info.nearestFormat(format);
-        m_audioOutput = new QAudioOutput(info, format, this);
-        m_audioOutput->setBufferSize(4096);
-        m_audioOutput->start(m_audioPullDevice);
-        LOG_INFO("Audio output started: %dHz/%dch/s%d (pull mode)",
-                 format.sampleRate(), format.channelCount(), format.sampleSize());
+        if (info.deviceName().isEmpty() || info.deviceName() == "null") {
+            LOG_WARN("No audio output device, audio disabled");
+            delete m_audioPullDevice;
+            m_audioPullDevice = nullptr;
+        } else {
+            format = info.nearestFormat(format);
+            if (format.sampleRate() <= 0) {
+                LOG_WARN("Audio format invalid, audio disabled");
+                delete m_audioPullDevice;
+                m_audioPullDevice = nullptr;
+            } else {
+                m_audioOutput = new QAudioOutput(info, format, this);
+                m_audioOutput->setBufferSize(4096);
+                m_audioOutput->start(m_audioPullDevice);
+                LOG_INFO("Audio output: %s %dHz/%dch/s%d",
+                         info.deviceName().toUtf8().constData(),
+                         format.sampleRate(), format.channelCount(), format.sampleSize());
+            }
+        }
 
+    // Audio worker (only if device valid)
+    if (m_audioCodecCtx && m_audioPullDevice) {
         m_audioThread = new QThread(this);
         m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
                                          m_audioQueue, m_clock,
@@ -288,6 +303,7 @@ void StreamLifecycleManager::startThreads() {
         connect(m_audioThread, &QThread::started, m_audioWorker, &AudioWorker::start);
         connect(m_audioWorker, &AudioWorker::destroyed, m_audioThread, &QThread::quit);
         connect(m_audioThread, &QThread::finished, m_audioThread, &QObject::deleteLater);
+    }
     }
 
     m_demuxThread->start();
