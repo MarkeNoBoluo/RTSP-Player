@@ -5,6 +5,7 @@
 
 class PacketQueue;
 class AVClock;
+class AudioPullDevice;
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,7 +21,8 @@ class AudioWorker : public QObject {
     Q_OBJECT
 public:
     AudioWorker(AVCodecContext* codecCtx, AVRational timeBase,
-                PacketQueue* queue, AVClock* clock, QObject* parent = nullptr);
+                PacketQueue* queue, AVClock* clock,
+                AudioPullDevice* device, QObject* parent = nullptr);
     ~AudioWorker() override;
 
 public slots:
@@ -32,9 +34,9 @@ private:
     AVRational         m_timeBase;
     PacketQueue*       m_queue;
     AVClock*           m_clock;
+    AudioPullDevice*   m_device;
 
-    SwrContext*        m_swrCtx     = nullptr;
-    int                m_sampleRate = 48000;
+    SwrContext*        m_swrCtx   = nullptr;
 
     std::atomic<bool>  m_running{false};
 };

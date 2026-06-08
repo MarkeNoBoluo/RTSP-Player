@@ -9,7 +9,12 @@
 #include "VideoDecodeThread.h"
 #include "RenderScheduler.h"
 #include "AudioWorker.h"
+#include "AudioPullDevice.h"
 #include "logger/Logger.h"
+
+#include <QAudioOutput>
+#include <QAudioFormat>
+#include <QAudioDeviceInfo>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -246,16 +251,40 @@ void StreamLifecycleManager::startThreads() {
         m_renderScheduler->setFrameDuration(33333.0);
     }
 
-    // Audio worker + thread
+    // Audio output on GUI thread (WASAPI requires message pump)
     if (m_audioCodecCtx) {
         delete m_audioWorker;
         delete m_audioThread;
+        delete m_audioOutput;
+        delete m_audioPullDevice;
 
         AVRational audioTimeBase = m_audioStream ? m_audioStream->time_base : AVRational{1, 90000};
 
+        m_audioPullDevice = new AudioPullDevice(200, this);
+        m_audioPullDevice->open(QIODevice::ReadOnly);
+
+        QAudioFormat format;
+        format.setSampleRate(48000);
+        format.setChannelCount(2);
+        format.setSampleSize(16);
+        format.setCodec("audio/pcm");
+        format.setByteOrder(QAudioFormat::LittleEndian);
+        format.setSampleType(QAudioFormat::SignedInt);
+
+        QAudioDeviceInfo info = QAudioDeviceInfo::defaultOutputDevice();
+        if (info.isFormatSupported(format)) {
+            m_audioOutput = new QAudioOutput(info, format, this);
+            m_audioOutput->setBufferSize(4096);
+            m_audioOutput->start(m_audioPullDevice);
+            LOG_INFO("Audio output started: 48000Hz/stereo/s16 (pull mode)");
+        } else {
+            LOG_ERROR("Audio format not supported, audio disabled");
+        }
+
         m_audioThread = new QThread(this);
         m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
-                                         m_audioQueue, m_clock);
+                                         m_audioQueue, m_clock,
+                                         m_audioPullDevice);
         m_audioWorker->moveToThread(m_audioThread);
 
         connect(m_audioThread, &QThread::started, m_audioWorker, &AudioWorker::start);
@@ -317,11 +346,15 @@ void StreamLifecycleManager::shutdownPipeline() {
     delete m_decodeThread;
     delete m_renderScheduler;
     delete m_audioWorker;
+    delete m_audioOutput;
+    delete m_audioPullDevice;
     m_demuxThread     = nullptr;
     m_decodeThread    = nullptr;
     m_renderScheduler = nullptr;
     m_audioWorker     = nullptr;
     m_audioThread     = nullptr;
+    m_audioOutput     = nullptr;
+    m_audioPullDevice = nullptr;
 
     if (m_videoCodecCtx) { avcodec_flush_buffers(m_videoCodecCtx); avcodec_free_context(&m_videoCodecCtx); }
     if (m_audioCodecCtx) { avcodec_flush_buffers(m_audioCodecCtx); avcodec_free_context(&m_audioCodecCtx); }

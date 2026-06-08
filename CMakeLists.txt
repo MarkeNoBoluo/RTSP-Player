@@ -26,6 +26,7 @@ set(SOURCES
     src/VideoDecodeThread.cpp
     src/RenderScheduler.cpp
     src/AudioWorker.cpp
+    src/AudioPullDevice.cpp
     src/PacketQueue.cpp
     src/VideoFrameQueue.cpp
     src/AVClock.cpp

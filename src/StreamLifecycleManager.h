@@ -25,6 +25,8 @@ class DemuxThread;
 class VideoDecodeThread;
 class RenderScheduler;
 class AudioWorker;
+class AudioPullDevice;
+class QAudioOutput;
 
 class StreamLifecycleManager : public QObject {
     Q_OBJECT
@@ -71,6 +73,8 @@ private:
     RenderScheduler*     m_renderScheduler = nullptr;
     AudioWorker*         m_audioWorker     = nullptr;
     QThread*             m_audioThread     = nullptr;
+    AudioPullDevice*     m_audioPullDevice = nullptr;
+    QAudioOutput*        m_audioOutput     = nullptr;
 
     AVFormatContext*     m_fmtCtx          = nullptr;
     AVStream*            m_videoStream     = nullptr;

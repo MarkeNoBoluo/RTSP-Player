@@ -89,6 +89,7 @@ void PacketQueue::flush() {
         m_queue.pop_front();
     }
     m_totalDurationUs = 0;
+    m_initialized = false;
     m_abort = false;
     m_cond.notify_all();
 }
