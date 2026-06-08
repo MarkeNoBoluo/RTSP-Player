@@ -39,10 +39,14 @@ StreamLifecycleManager::StreamLifecycleManager(
     m_reconnectTimer = new QTimer(this);
     m_reconnectTimer->setSingleShot(true);
     connect(m_reconnectTimer, &QTimer::timeout, this, &StreamLifecycleManager::doReconnect);
+
+    m_stats->initCsv("stats.csv");
+    m_glWidget->setStats(m_stats);
 }
 
 StreamLifecycleManager::~StreamLifecycleManager() {
     close();
+    m_stats->closeCsv();
 }
 
 PlayerState StreamLifecycleManager::state() const {
@@ -105,6 +109,8 @@ void StreamLifecycleManager::onStreamError() {
         return;
     }
     emit stateChanged(PlayerState::Recovering);
+
+    m_stats->reconnectStartUs.store(av_gettime_relative());
 
     LOG_INFO("Stream error detected, shutting down for reconnect");
 
@@ -263,6 +269,7 @@ void StreamLifecycleManager::startThreads() {
 
         m_audioPullDevice = new AudioPullDevice(200, this);
         m_audioPullDevice->open(QIODevice::ReadWrite);
+        m_audioPullDevice->setStats(m_stats);
 
         QAudioFormat format;
         format.setSampleRate(48000);
@@ -445,6 +452,14 @@ void StreamLifecycleManager::doReconnect() {
 
     m_backoffCount = 0;
     m_reconnectDelayMs = 1000;
+
+    m_stats->reconnectCount++;
+    int64_t reconnectUs = m_stats->reconnectStartUs.load();
+    if (reconnectUs > 0) {
+        int64_t recoveryMs = (av_gettime_relative() - reconnectUs) / 1000;
+        m_stats->totalReconnectMs.fetch_add(recoveryMs);
+        m_stats->reconnectStartUs.store(0);
+    }
 
     startThreads();
     LOG_INFO("Reconnect successful");

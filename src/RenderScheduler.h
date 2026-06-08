@@ -32,4 +32,5 @@ private:
 
     std::atomic<bool> m_running{false};
     double            m_frameDurationUs = 0.0;
+    int               m_consecutiveDrops = 0;
 };

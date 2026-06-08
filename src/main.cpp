@@ -54,7 +54,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("QApplication created");
 
     QMainWindow window;
-    window.setWindowTitle("RTSP Player - Phase 3");
+    window.setWindowTitle("RTSP Player - Phase 4.5");
 
     auto* centralWidget = new QWidget(&window);
     auto* layout = new QVBoxLayout(centralWidget);
@@ -85,14 +85,26 @@ int main(int argc, char* argv[]) {
     auto* timer = new QTimer(&window);
     QObject::connect(timer, &QTimer::timeout, [&]() {
         auto* stats = player.stats();
-        int64_t latenessMs = stats->lastLatenessUs.load() / 1000;
-        statsLabel->setText(QString("Decoded: %1 | Rendered: %2 | Dropped: %3 | Lateness: %4ms")
+        int64_t latMs = stats->lastLatenessUs.load() / 1000;
+        int64_t latMaxMs = stats->maxLatenessUs.load() / 1000;
+        int64_t burst = stats->renderSkipBurst.load();
+        int underrun = stats->audioUnderruns.load();
+        int overrun = stats->audioOverruns.load();
+        statsLabel->setText(QString(
+            "Dec:%1 | Ren:%2 | Drop:%3 | Lat:%4ms(max%5) | Burst:%6 | Au:%7/%8")
             .arg(stats->framesDecoded.load())
             .arg(stats->framesRendered.load())
             .arg(stats->framesDropped.load())
-            .arg(latenessMs));
+            .arg(latMs).arg(latMaxMs).arg(burst)
+            .arg(underrun).arg(overrun));
     });
     timer->start(1000);
+
+    auto* csvTimer = new QTimer(&window);
+    QObject::connect(csvTimer, &QTimer::timeout, [&]() {
+        player.stats()->writeCsvRow();
+    });
+    csvTimer->start(5000);
 
     auto* renderTimer = new QTimer(&window);
     QObject::connect(renderTimer, &QTimer::timeout, [&]() {

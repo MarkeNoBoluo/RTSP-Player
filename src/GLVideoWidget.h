@@ -6,6 +6,9 @@
 #include <QOpenGLShaderProgram>
 #include <QOpenGLBuffer>
 #include <mutex>
+#include <cstdint>
+
+class PlayerStats;
 
 class GLVideoWidget : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
@@ -17,6 +20,8 @@ public:
 
     int videoWidth()  const { return m_videoWidth; }
     int videoHeight() const { return m_videoHeight; }
+
+    void setStats(PlayerStats* stats) { m_stats = stats; }
 
 protected:
     void initializeGL() override;
@@ -33,6 +38,8 @@ private:
 
     AVFrame* m_localFrame = nullptr;
     std::mutex m_frameMutex;
+    PlayerStats* m_stats = nullptr;
+    int64_t m_lastPaintUs = 0;
 
     int m_videoWidth  = 0;
     int m_videoHeight = 0;

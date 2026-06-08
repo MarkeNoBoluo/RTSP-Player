@@ -1,6 +1,11 @@
 #include "GLVideoWidget.h"
+#include "PlayerStats.h"
 #include <QDebug>
 #include "logger/Logger.h"
+
+extern "C" {
+#include <libavutil/time.h>
+}
 
 static const float kVertices[] = {
     -1.0f, -1.0f,  0.0f, 1.0f,
@@ -77,6 +82,22 @@ void GLVideoWidget::initializeGL() {
 }
 
 void GLVideoWidget::paintGL() {
+    int64_t now = av_gettime_relative();
+
+    // Record paint interval
+    if (m_lastPaintUs > 0 && m_stats) {
+        m_stats->recordPaintInterval(now - m_lastPaintUs);
+    }
+    m_lastPaintUs = now;
+
+    // Record paint latency: time from commit to paint
+    if (m_stats) {
+        int64_t commitUs = m_stats->lastCommitUs.load();
+        if (commitUs > 0) {
+            m_stats->recordPaintLatency(now - commitUs);
+        }
+    }
+
     std::lock_guard<std::mutex> lock(m_frameMutex);
 
     auto* f = m_localFrame;

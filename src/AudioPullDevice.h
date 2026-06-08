@@ -4,6 +4,8 @@
 #include <QMutex>
 #include <QByteArray>
 
+class PlayerStats;
+
 class AudioPullDevice : public QIODevice {
     Q_OBJECT
 public:
@@ -15,6 +17,7 @@ public:
     void abort();
     qint64 bytesAvailable() const override;
     bool isSequential() const override { return true; }
+    void setStats(PlayerStats* s) { m_stats = s; }
 
 private:
     mutable QMutex m_mutex;
@@ -23,4 +26,5 @@ private:
     qint64 m_readPos  = 0;
     int m_bufferSize  = 0;
     bool m_abort = false;
+    PlayerStats* m_stats = nullptr;
 };

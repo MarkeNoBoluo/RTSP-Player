@@ -38,6 +38,7 @@ void RenderScheduler::setFrameDuration(double frameDurationUs) {
 
 void RenderScheduler::run() {
     m_running = true;
+    m_consecutiveDrops = 0;
 
     LOG_INFO("Render scheduler thread running");
 
@@ -59,10 +60,24 @@ void RenderScheduler::run() {
         }
         m_stats->lastLatenessUs = latenessUs;
 
+        // Track max lateness (no atomic max, just load/store)
+        int64_t curMax = m_stats->maxLatenessUs.load();
+        if (latenessUs > 0 && latenessUs > curMax) {
+            m_stats->maxLatenessUs.store(latenessUs);
+        }
+
         if (shouldDrop(latenessUs)) {
             m_frameQueue->discardRender();
             m_stats->framesDropped++;
+            m_consecutiveDrops++;
+            if (m_consecutiveDrops > m_stats->renderSkipBurst.load()) {
+                m_stats->renderSkipBurst.store(m_consecutiveDrops);
+            }
             continue;
+        }
+
+        if (m_consecutiveDrops > 0) {
+            m_consecutiveDrops = 0;
         }
 
         m_frameQueue->commitDisplay();
@@ -71,7 +86,9 @@ void RenderScheduler::run() {
         auto* displayFrame = m_frameQueue->displayFrame();
         m_widget->setDisplayFrame(displayFrame);
 
+        m_stats->lastCommitUs.store(av_gettime_relative());
         m_stats->framesRendered++;
+        m_stats->frameId++;
     }
 
     LOG_INFO("Render scheduler thread exiting, rendered=%lld, dropped=%lld",

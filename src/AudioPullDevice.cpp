@@ -1,4 +1,5 @@
 #include "AudioPullDevice.h"
+#include "PlayerStats.h"
 
 AudioPullDevice::AudioPullDevice(int bufferMs, QObject* parent)
     : QIODevice(parent)
@@ -15,7 +16,10 @@ qint64 AudioPullDevice::readData(char* data, qint64 maxSize) {
         ? m_writePos - m_readPos
         : m_bufferSize - m_readPos + m_writePos;
 
-    if (available == 0) return 0;
+    if (available == 0) {
+        if (m_stats) m_stats->audioUnderruns++;
+        return 0;
+    }
 
     qint64 toRead = qMin(maxSize, available);
     qint64 firstChunk = qMin(toRead, m_bufferSize - m_readPos);
@@ -38,7 +42,10 @@ qint64 AudioPullDevice::writeData(const char* data, qint64 maxSize) {
         ((m_writePos >= m_readPos) ? (m_writePos - m_readPos)
                                    : (m_bufferSize - m_readPos + m_writePos));
 
-    if (available <= 0) return 0;
+    if (available <= 0) {
+        if (m_stats) m_stats->audioOverruns++;
+        return 0;
+    }
 
     qint64 toWrite = qMin(maxSize, available);
     qint64 firstChunk = qMin(toWrite, m_bufferSize - m_writePos);
