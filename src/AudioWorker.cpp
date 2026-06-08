@@ -5,6 +5,7 @@
 #include "logger/Logger.h"
 
 #include <QThread>
+#include <QFile>
 
 extern "C" {
 #include <libavutil/time.h>
@@ -14,6 +15,7 @@ extern "C" {
 #define TARGET_RATE      48000
 #define TARGET_CHANNELS  2
 #define TARGET_FORMAT    AV_SAMPLE_FMT_S16
+#define WAV_PATH         "audio_output.wav"
 
 AudioWorker::AudioWorker(AVCodecContext* codecCtx, AVRational timeBase,
                          PacketQueue* queue, AVClock* clock,
@@ -29,6 +31,49 @@ AudioWorker::AudioWorker(AVCodecContext* codecCtx, AVRational timeBase,
 
 AudioWorker::~AudioWorker() {
     stop();
+}
+
+void AudioWorker::writeWavHeader() {
+    if (!m_wavFile) return;
+    uint8_t header[44] = {0};
+    int sampleRate = TARGET_RATE;
+    int channels   = TARGET_CHANNELS;
+    int bits       = 16;
+    int byteRate   = sampleRate * channels * bits / 8;
+    int blockAlign = channels * bits / 8;
+
+    memcpy(header,     "RIFF", 4);
+    memcpy(header + 8, "WAVE", 4);
+    memcpy(header + 12, "fmt ", 4);
+    header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0; // chunk size
+    header[20] = 1;  header[21] = 0;                                 // PCM
+    header[22] = channels & 0xFF;
+    header[23] = (channels >> 8) & 0xFF;
+    header[24] = sampleRate & 0xFF;
+    header[25] = (sampleRate >> 8) & 0xFF;
+    header[26] = (sampleRate >> 16) & 0xFF;
+    header[27] = (sampleRate >> 24) & 0xFF;
+    header[28] = byteRate & 0xFF;
+    header[29] = (byteRate >> 8) & 0xFF;
+    header[30] = (byteRate >> 16) & 0xFF;
+    header[31] = (byteRate >> 24) & 0xFF;
+    header[32] = blockAlign & 0xFF;
+    header[33] = (blockAlign >> 8) & 0xFF;
+    header[34] = bits & 0xFF;
+    header[35] = (bits >> 8) & 0xFF;
+    memcpy(header + 36, "data", 4);
+    // data size (40-43) left as 0 placeholder, updated on stop
+
+    fwrite(header, 1, 44, m_wavFile);
+}
+
+void AudioWorker::updateWavHeader() {
+    if (!m_wavFile) return;
+    int fileSize = 36 + m_dataSize;
+    fseek(m_wavFile, 4, SEEK_SET);
+    fwrite(&fileSize, 4, 1, m_wavFile);
+    fseek(m_wavFile, 40, SEEK_SET);
+    fwrite(&m_dataSize, 4, 1, m_wavFile);
 }
 
 void AudioWorker::start() {
@@ -51,6 +96,12 @@ void AudioWorker::start() {
         if (m_swrCtx) swr_free(&m_swrCtx);
         m_running = false;
         return;
+    }
+
+    m_wavFile = fopen(WAV_PATH, "wb");
+    if (m_wavFile) {
+        writeWavHeader();
+        LOG_INFO("WAV file opened for diagnostic: %s (48000Hz/stereo/s16)", WAV_PATH);
     }
 
     LOG_INFO("Audio decode loop: in=%dHz/%dch out=%dHz/stereo/s16",
@@ -109,29 +160,44 @@ void AudioWorker::start() {
 
             int actualSize = converted * TARGET_CHANNELS * 2;
 
-            while (m_running) {
-                qint64 written = m_device->write(reinterpret_cast<const char*>(dstBuf), actualSize);
-                if (written == actualSize) {
-                    if (!hasAudio) {
-                        hasAudio = true;
-                        LOG_INFO("Audio started: first %lld bytes, queue=%d", written, m_queue->size());
-                    }
-                    break;
-                }
-                if (written < 0) break;
-                QThread::msleep(1);
+            // Write to WAV file (diagnostic)
+            if (m_wavFile) {
+                fwrite(dstBuf, 1, actualSize, m_wavFile);
+                m_dataSize += actualSize;
             }
+
+            // Write to audio device (if available)
+            if (m_device) {
+                while (m_running) {
+                    qint64 written = m_device->write(reinterpret_cast<const char*>(dstBuf), actualSize);
+                    if (written == actualSize) break;
+                    if (written < 0) break;
+                    QThread::msleep(1);
+                }
+            }
+
+            if (!hasAudio) {
+                hasAudio = true;
+                LOG_INFO("Audio started: first %d bytes, wav=%s", actualSize,
+                         m_wavFile ? "yes" : "no");
+            }
+
             av_free(dstBuf);
 
             int64_t pts = frame->pts;
             if (pts == AV_NOPTS_VALUE) pts = frame->pkt_dts;
             if (pts != AV_NOPTS_VALUE) {
                 double ptsSec = pts * av_q2d(m_timeBase);
-                int bufferedBytes = static_cast<int>(m_device->bytesAvailable());
-                double bufferedSec = static_cast<double>(bufferedBytes) / bytesPerSecond;
-                m_clock->setAudioClock(ptsSec + bufferedSec);
+                m_clock->setAudioClock(ptsSec);
             }
         }
+    }
+
+    if (m_wavFile) {
+        updateWavHeader();
+        fclose(m_wavFile);
+        m_wavFile = nullptr;
+        LOG_INFO("WAV file closed: %s (%d bytes PCM)", WAV_PATH, m_dataSize);
     }
 
     swr_free(&m_swrCtx);
@@ -143,8 +209,8 @@ void AudioWorker::start() {
 
 void AudioWorker::stop() {
     m_running = false;
+    m_queue->abort();
     if (m_device) {
         m_device->abort();
     }
-    m_queue->abort();
 }

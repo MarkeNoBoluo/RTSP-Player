@@ -304,8 +304,8 @@ void StreamLifecycleManager::startThreads() {
             }
         }
 
-    // Audio worker (only if device valid)
-    if (m_audioCodecCtx && m_audioPullDevice) {
+    // Audio worker (always create if codec exists; WAV file diagnostic)
+    if (m_audioCodecCtx) {
         m_audioThread = new QThread(this);
         m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
                                          m_audioQueue, m_clock,

@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <atomic>
+#include <cstdio>
 
 class PacketQueue;
 class AVClock;
@@ -30,6 +31,9 @@ public slots:
     void stop();
 
 private:
+    void writeWavHeader();
+    void updateWavHeader();
+
     AVCodecContext*    m_codecCtx;
     AVRational         m_timeBase;
     PacketQueue*       m_queue;
@@ -37,6 +41,8 @@ private:
     AudioPullDevice*   m_device;
 
     SwrContext*        m_swrCtx   = nullptr;
+    FILE*              m_wavFile  = nullptr;
+    int                m_dataSize = 0;
 
     std::atomic<bool>  m_running{false};
 };
