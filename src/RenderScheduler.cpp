@@ -99,6 +99,9 @@ bool RenderScheduler::shouldDrop(int64_t latenessUs) const {
     if (!m_clock->isReady()) return false;
     if (m_frameDurationUs <= 0.0) return false;
 
+    // Clock discontinuity: network pause or server stall → force display
+    if (latenessUs > 1000000) return false;
+
     int64_t threshold = static_cast<int64_t>(m_frameDurationUs * 1.5);
     if (threshold < 30000) threshold = 30000;
 
