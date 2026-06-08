@@ -3,6 +3,7 @@
 #include "Common.h"
 #include <QObject>
 #include <QTimer>
+#include <QThread>
 #include <atomic>
 #include <string>
 
@@ -23,6 +24,7 @@ class PlayerStats;
 class DemuxThread;
 class VideoDecodeThread;
 class RenderScheduler;
+class AudioWorker;
 
 class StreamLifecycleManager : public QObject {
     Q_OBJECT
@@ -49,7 +51,7 @@ private slots:
 
 private:
     bool initDemux(const char* url);
-    bool initDecoder();
+    bool initDecoders();
     void startThreads();
 
     void shutdownPipeline();
@@ -67,13 +69,16 @@ private:
     DemuxThread*         m_demuxThread     = nullptr;
     VideoDecodeThread*   m_decodeThread    = nullptr;
     RenderScheduler*     m_renderScheduler = nullptr;
+    AudioWorker*         m_audioWorker     = nullptr;
+    QThread*             m_audioThread     = nullptr;
 
-    AVFormatContext*     m_fmtCtx       = nullptr;
-    AVStream*            m_videoStream  = nullptr;
-    AVStream*            m_audioStream  = nullptr;
-    AVCodecParameters*   m_videoCodecPar = nullptr;
-    AVCodecParameters*   m_audioCodecPar = nullptr;
-    AVCodecContext*      m_codecCtx      = nullptr;
+    AVFormatContext*     m_fmtCtx          = nullptr;
+    AVStream*            m_videoStream     = nullptr;
+    AVStream*            m_audioStream     = nullptr;
+    AVCodecParameters*   m_videoCodecPar   = nullptr;
+    AVCodecParameters*   m_audioCodecPar   = nullptr;
+    AVCodecContext*      m_videoCodecCtx   = nullptr;
+    AVCodecContext*      m_audioCodecCtx   = nullptr;
 
     QTimer*              m_reconnectTimer = nullptr;
     int                  m_reconnectDelayMs = 1000;

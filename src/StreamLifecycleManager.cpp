@@ -8,6 +8,7 @@
 #include "DemuxThread.h"
 #include "VideoDecodeThread.h"
 #include "RenderScheduler.h"
+#include "AudioWorker.h"
 #include "logger/Logger.h"
 
 extern "C" {
@@ -66,12 +67,12 @@ bool StreamLifecycleManager::open(const char* url) {
         return false;
     }
 
-    if (m_videoCodecPar && !initDecoder()) {
+    if (!initDecoders()) {
         avformat_close_input(&m_fmtCtx);
         m_fmtCtx = nullptr;
         m_stateMachine->forceState(PlayerState::Error);
         emit stateChanged(PlayerState::Error);
-        emit errorOccurred(QStringLiteral("Failed to open video decoder"));
+        emit errorOccurred(QStringLiteral("Failed to open decoder"));
         return false;
     }
 
@@ -169,8 +170,10 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_audioStream   = m_fmtCtx->streams[audioIdx];
         m_audioCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_audioCodecPar, m_audioStream->codecpar);
-        m_audioQueue->init(m_audioStream->time_base, 200);
-        LOG_INFO("Audio stream: index=%d", audioIdx);
+        m_audioQueue->init(m_audioStream->time_base, 80);
+        LOG_INFO("Audio stream: index=%d, codec=%d, %dHz/%dch",
+                 audioIdx, m_audioCodecPar->codec_id,
+                 m_audioCodecPar->sample_rate, m_audioCodecPar->channels);
     }
 
     if (!m_videoStream) {
@@ -188,25 +191,38 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     return true;
 }
 
-bool StreamLifecycleManager::initDecoder() {
-    if (!m_videoCodecPar) return false;
-
-    const AVCodec* codec = avcodec_find_decoder(m_videoCodecPar->codec_id);
-    if (!codec) {
-        LOG_ERROR("Decoder not found for codec_id=%d", m_videoCodecPar->codec_id);
-        return false;
+bool StreamLifecycleManager::initDecoders() {
+    // Video decoder
+    if (m_videoCodecPar) {
+        const AVCodec* codec = avcodec_find_decoder(m_videoCodecPar->codec_id);
+        if (!codec) {
+            LOG_ERROR("Video decoder not found for codec_id=%d", m_videoCodecPar->codec_id);
+            return false;
+        }
+        m_videoCodecCtx = avcodec_alloc_context3(codec);
+        if (!m_videoCodecCtx) return false;
+        avcodec_parameters_to_context(m_videoCodecCtx, m_videoCodecPar);
+        m_videoCodecCtx->thread_count = 2;
+        if (avcodec_open2(m_videoCodecCtx, codec, nullptr) < 0) return false;
+        LOG_INFO("Video decoder opened: %dx%d", m_videoCodecCtx->width, m_videoCodecCtx->height);
     }
 
-    m_codecCtx = avcodec_alloc_context3(codec);
-    if (!m_codecCtx) return false;
+    // Audio decoder
+    if (m_audioCodecPar) {
+        const AVCodec* codec = avcodec_find_decoder(m_audioCodecPar->codec_id);
+        if (!codec) {
+            LOG_ERROR("Audio decoder not found for codec_id=%d", m_audioCodecPar->codec_id);
+            return false;
+        }
+        m_audioCodecCtx = avcodec_alloc_context3(codec);
+        if (!m_audioCodecCtx) return false;
+        avcodec_parameters_to_context(m_audioCodecCtx, m_audioCodecPar);
+        m_audioCodecCtx->thread_count = 1;
+        if (avcodec_open2(m_audioCodecCtx, codec, nullptr) < 0) return false;
+        LOG_INFO("Audio decoder opened: %dHz/%dch",
+                 m_audioCodecCtx->sample_rate, m_audioCodecCtx->channels);
+    }
 
-    avcodec_parameters_to_context(m_codecCtx, m_videoCodecPar);
-    m_codecCtx->thread_count = 2;
-
-    if (avcodec_open2(m_codecCtx, codec, nullptr) < 0) return false;
-
-    LOG_INFO("Decoder opened: %dx%d, thread_count=%d",
-             m_codecCtx->width, m_codecCtx->height, m_codecCtx->thread_count);
     return true;
 }
 
@@ -214,10 +230,12 @@ void StreamLifecycleManager::startThreads() {
     delete m_decodeThread;
     delete m_renderScheduler;
 
-    AVRational timeBase = m_videoStream ? m_videoStream->time_base : AVRational{1, 90000};
+    AVRational videoTimeBase = m_videoStream ? m_videoStream->time_base : AVRational{1, 90000};
 
-    m_decodeThread = new VideoDecodeThread(m_codecCtx, timeBase,
-                                            m_videoQueue, m_frameQueue, m_stats, this);
+    if (m_videoCodecCtx) {
+        m_decodeThread = new VideoDecodeThread(m_videoCodecCtx, videoTimeBase,
+                                                m_videoQueue, m_frameQueue, m_stats, this);
+    }
 
     m_renderScheduler = new RenderScheduler(m_frameQueue, m_clock, m_glWidget, m_stats, this);
 
@@ -228,9 +246,27 @@ void StreamLifecycleManager::startThreads() {
         m_renderScheduler->setFrameDuration(33333.0);
     }
 
+    // Audio worker + thread
+    if (m_audioCodecCtx) {
+        delete m_audioWorker;
+        delete m_audioThread;
+
+        AVRational audioTimeBase = m_audioStream ? m_audioStream->time_base : AVRational{1, 90000};
+
+        m_audioThread = new QThread(this);
+        m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
+                                         m_audioQueue, m_clock);
+        m_audioWorker->moveToThread(m_audioThread);
+
+        connect(m_audioThread, &QThread::started, m_audioWorker, &AudioWorker::start);
+        connect(m_audioWorker, &AudioWorker::destroyed, m_audioThread, &QThread::quit);
+        connect(m_audioThread, &QThread::finished, m_audioThread, &QObject::deleteLater);
+    }
+
     m_demuxThread->start();
-    m_decodeThread->start();
+    if (m_decodeThread) m_decodeThread->start();
     m_renderScheduler->start();
+    if (m_audioThread) m_audioThread->start();
 }
 
 void StreamLifecycleManager::shutdownPipeline() {
@@ -241,6 +277,16 @@ void StreamLifecycleManager::shutdownPipeline() {
     m_videoQueue->abort();
     m_audioQueue->abort();
     m_frameQueue->notifyAll();
+
+    // Stop audio thread first (uses audio queue)
+    if (m_audioWorker) {
+        m_audioWorker->stop();
+    }
+    if (m_audioThread && m_audioThread->isRunning()) {
+        if (!m_audioThread->wait(3000)) {
+            LOG_ERROR("AudioThread wait timeout — abandoned");
+        }
+    }
 
     if (m_demuxThread) {
         m_demuxThread->stop();
@@ -270,14 +316,15 @@ void StreamLifecycleManager::shutdownPipeline() {
     delete m_demuxThread;
     delete m_decodeThread;
     delete m_renderScheduler;
+    delete m_audioWorker;
     m_demuxThread     = nullptr;
     m_decodeThread    = nullptr;
     m_renderScheduler = nullptr;
+    m_audioWorker     = nullptr;
+    m_audioThread     = nullptr;
 
-    if (m_codecCtx) {
-        avcodec_flush_buffers(m_codecCtx);
-        avcodec_free_context(&m_codecCtx);
-    }
+    if (m_videoCodecCtx) { avcodec_flush_buffers(m_videoCodecCtx); avcodec_free_context(&m_videoCodecCtx); }
+    if (m_audioCodecCtx) { avcodec_flush_buffers(m_audioCodecCtx); avcodec_free_context(&m_audioCodecCtx); }
 
     if (m_videoCodecPar) { avcodec_parameters_free(&m_videoCodecPar); }
     if (m_audioCodecPar) { avcodec_parameters_free(&m_audioCodecPar); }
@@ -286,12 +333,13 @@ void StreamLifecycleManager::shutdownPipeline() {
         avformat_close_input(&m_fmtCtx);
     }
 
-    m_fmtCtx       = nullptr;
-    m_videoStream  = nullptr;
-    m_audioStream  = nullptr;
-    m_videoCodecPar = nullptr;
-    m_audioCodecPar = nullptr;
-    m_codecCtx      = nullptr;
+    m_fmtCtx         = nullptr;
+    m_videoStream    = nullptr;
+    m_audioStream    = nullptr;
+    m_videoCodecPar  = nullptr;
+    m_audioCodecPar  = nullptr;
+    m_videoCodecCtx  = nullptr;
+    m_audioCodecCtx  = nullptr;
 
     m_videoQueue->flush();
     m_audioQueue->flush();
@@ -327,7 +375,7 @@ void StreamLifecycleManager::doReconnect() {
         return;
     }
 
-    if (m_videoCodecPar && !initDecoder()) {
+    if (!initDecoders()) {
         m_backoffCount++;
         m_reconnectDelayMs = m_reconnectDelayMs * 2;
         if (m_reconnectDelayMs > 8000) m_reconnectDelayMs = 8000;

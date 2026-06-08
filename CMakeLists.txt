@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt5 REQUIRED COMPONENTS Widgets OpenGL)
+find_package(Qt5 REQUIRED COMPONENTS Widgets OpenGL Multimedia)
 
 set(FFMPEG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/3rd/FFmpeg4.2.9")
 set(FFMPEG_INCLUDE_DIRS ${FFMPEG_ROOT}/include)
@@ -25,6 +25,7 @@ set(SOURCES
     src/DemuxThread.cpp
     src/VideoDecodeThread.cpp
     src/RenderScheduler.cpp
+    src/AudioWorker.cpp
     src/PacketQueue.cpp
     src/VideoFrameQueue.cpp
     src/AVClock.cpp
@@ -52,6 +53,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt5::Widgets
     Qt5::OpenGL
+    Qt5::Multimedia
     ${AVFORMAT_LIBRARY}
     ${AVCODEC_LIBRARY}
     ${AVUTIL_LIBRARY}
