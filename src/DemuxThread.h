@@ -23,35 +23,26 @@ public:
                 QObject* parent = nullptr);
     ~DemuxThread() override;
 
-    bool open(const char* url);
+    void prepareForOpen();
+    void setContext(AVFormatContext* fmtCtx, AVStream* videoStream, AVStream* audioStream);
     void stop();
 
-    AVStream*     videoStream() const { return m_videoStream; }
-    AVStream*     audioStream() const { return m_audioStream; }
-    AVCodecParameters* videoCodecPar() const { return m_videoCodecPar; }
-    AVCodecParameters* audioCodecPar() const { return m_audioCodecPar; }
-    AVRational    videoTimeBase() const;
-    AVRational    audioTimeBase() const;
+    static int interruptCallback(void* opaque);
 
 signals:
-    void streamInfoReady();
+    void streamError();
 
 protected:
     void run() override;
 
 private:
-    static int interruptCallback(void* opaque);
-
     PlayerStateMachine* m_stateMachine;
     PlayerStats*        m_stats;
-    PacketQueue*        m_videoQueue;
-    PacketQueue*        m_audioQueue;
-
-    AVFormatContext*    m_fmtCtx    = nullptr;
+    AVFormatContext*    m_fmtCtx = nullptr;
     AVStream*           m_videoStream = nullptr;
     AVStream*           m_audioStream = nullptr;
-    AVCodecParameters*  m_videoCodecPar = nullptr;
-    AVCodecParameters*  m_audioCodecPar = nullptr;
+    PacketQueue*        m_videoQueue;
+    PacketQueue*        m_audioQueue;
 
     std::atomic<bool>   m_abort{false};
     int64_t             m_lastReadTime = 0;

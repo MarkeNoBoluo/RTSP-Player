@@ -20,6 +20,7 @@ find_library(SWRESAMPLE_LIBRARY swresample PATHS ${FFMPEG_LIBRARY_DIRS} REQUIRED
 set(SOURCES
     src/main.cpp
     src/RTSPlayer.cpp
+    src/StreamLifecycleManager.cpp
     src/PlayerStateMachine.cpp
     src/DemuxThread.cpp
     src/VideoDecodeThread.cpp

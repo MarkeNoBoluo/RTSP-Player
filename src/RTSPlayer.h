@@ -9,9 +9,7 @@ class VideoFrameQueue;
 class AVClock;
 class GLVideoWidget;
 class PlayerStats;
-class DemuxThread;
-class VideoDecodeThread;
-class RenderScheduler;
+class StreamLifecycleManager;
 
 class RTSPlayer : public QObject {
     Q_OBJECT
@@ -30,22 +28,13 @@ signals:
     void stateChanged(PlayerState state);
     void errorOccurred(const QString& message);
 
-private slots:
-    void onStreamInfoReady();
-
 private:
-    void shutdown();
-
-    PlayerStateMachine*  m_stateMachine;
-    PacketQueue*         m_videoQueue;
-    PacketQueue*         m_audioQueue;
-    VideoFrameQueue*     m_frameQueue;
-    AVClock*             m_clock;
-    GLVideoWidget*       m_glWidget;
-    PlayerStats*         m_stats;
-    DemuxThread*         m_demuxThread;
-    VideoDecodeThread*   m_videoDecodeThread;
-    RenderScheduler*     m_renderScheduler;
-
-    bool m_initialized = false;
+    PlayerStateMachine*     m_stateMachine;
+    PacketQueue*            m_videoQueue;
+    PacketQueue*            m_audioQueue;
+    VideoFrameQueue*        m_frameQueue;
+    AVClock*                m_clock;
+    GLVideoWidget*          m_glWidget;
+    PlayerStats*            m_stats;
+    StreamLifecycleManager* m_lifecycle;
 };

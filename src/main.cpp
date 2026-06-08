@@ -54,7 +54,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("QApplication created");
 
     QMainWindow window;
-    window.setWindowTitle("RTSP Player - Phase 1");
+    window.setWindowTitle("RTSP Player - Phase 3");
 
     auto* centralWidget = new QWidget(&window);
     auto* layout = new QVBoxLayout(centralWidget);
@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
     layout->addWidget(player.videoWidget(), 1);
 
     QObject::connect(&player, &RTSPlayer::stateChanged, [&](PlayerState state) {
-        const char* names[] = {"Stopped","Connecting","Playing","Reconnecting","Error","Closing"};
+        const char* names[] = {"Stopped","Connecting","Playing","Recovering","Reconnecting","Error","Closing"};
         LOG_INFO("State changed: %s (%d)", names[(int)state], (int)state);
         qDebug() << "State:" << static_cast<int>(state);
     });

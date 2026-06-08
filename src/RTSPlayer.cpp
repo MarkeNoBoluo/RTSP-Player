@@ -5,9 +5,7 @@
 #include "AVClock.h"
 #include "GLVideoWidget.h"
 #include "PlayerStats.h"
-#include "DemuxThread.h"
-#include "VideoDecodeThread.h"
-#include "RenderScheduler.h"
+#include "StreamLifecycleManager.h"
 #include "logger/Logger.h"
 
 RTSPlayer::RTSPlayer(QObject* parent)
@@ -19,12 +17,14 @@ RTSPlayer::RTSPlayer(QObject* parent)
     , m_clock(new AVClock)
     , m_glWidget(new GLVideoWidget)
     , m_stats(new PlayerStats)
-    , m_demuxThread(new DemuxThread(m_stateMachine, m_stats, m_videoQueue, m_audioQueue, this))
-    , m_videoDecodeThread(new VideoDecodeThread(m_videoQueue, m_frameQueue, m_stats, this))
-    , m_renderScheduler(new RenderScheduler(m_frameQueue, m_clock, m_glWidget, m_stats, this))
+    , m_lifecycle(new StreamLifecycleManager(m_stateMachine, m_stats,
+                   m_videoQueue, m_audioQueue, m_frameQueue, m_clock,
+                   m_glWidget, this))
 {
-    connect(m_demuxThread, &DemuxThread::streamInfoReady,
-            this, &RTSPlayer::onStreamInfoReady);
+    connect(m_lifecycle, &StreamLifecycleManager::stateChanged,
+            this, &RTSPlayer::stateChanged);
+    connect(m_lifecycle, &StreamLifecycleManager::errorOccurred,
+            this, &RTSPlayer::errorOccurred);
 }
 
 RTSPlayer::~RTSPlayer() {
@@ -32,100 +32,11 @@ RTSPlayer::~RTSPlayer() {
 }
 
 bool RTSPlayer::open(const char* url) {
-    if (!m_stateMachine->transition(PlayerState::Stopped, PlayerState::Connecting)) {
-        return false;
-    }
-
-    m_stateMachine->forceState(PlayerState::Stopped);
-    LOG_INFO("Opening stream: %s", url);
-    shutdown();
-
-    if (!m_stateMachine->transition(PlayerState::Stopped, PlayerState::Connecting)) {
-        return false;
-    }
-
-    if (!m_demuxThread->open(url)) {
-        m_stateMachine->forceState(PlayerState::Error);
-        emit stateChanged(PlayerState::Error);
-        emit errorOccurred(QStringLiteral("Failed to open RTSP stream"));
-        LOG_ERROR("Failed to open stream: %s", url);
-        return false;
-    }
-
-    m_initialized = true;
-    m_demuxThread->start();
-    LOG_INFO("Demux thread started, waiting for stream info...");
-    return true;
+    return m_lifecycle->open(url);
 }
 
 void RTSPlayer::close() {
-    if (m_stateMachine->state() == PlayerState::Stopped) return;
-
-    m_stateMachine->transition(m_stateMachine->state(), PlayerState::Closing);
-    emit stateChanged(PlayerState::Closing);
-
-    shutdown();
-    m_stateMachine->forceState(PlayerState::Stopped);
-    emit stateChanged(PlayerState::Stopped);
-}
-
-void RTSPlayer::shutdown() {
-    LOG_INFO("Shutting down player");
-    if (m_demuxThread->isRunning()) {
-        m_demuxThread->stop();
-        m_demuxThread->wait(3000);
-    }
-    if (m_videoDecodeThread->isRunning()) {
-        m_videoDecodeThread->stop();
-        m_videoDecodeThread->wait(3000);
-    }
-    if (m_renderScheduler->isRunning()) {
-        m_renderScheduler->stop();
-        m_renderScheduler->wait(3000);
-    }
-
-    m_videoQueue->flush();
-    m_audioQueue->flush();
-    m_frameQueue->flush();
-    m_clock->reset();
-    LOG_INFO("Player shutdown complete");
-    m_initialized = false;
-}
-
-void RTSPlayer::onStreamInfoReady() {
-    LOG_INFO("Stream info ready, opening decoder");
-    auto* codecPar = m_demuxThread->videoCodecPar();
-    if (!codecPar) {
-        LOG_ERROR("No video codec parameters in stream");
-        m_stateMachine->forceState(PlayerState::Error);
-        emit errorOccurred(QStringLiteral("No video codec parameters"));
-        return;
-    }
-
-    AVRational timeBase = m_demuxThread->videoTimeBase();
-
-    if (!m_videoDecodeThread->open(codecPar, timeBase)) {
-        LOG_ERROR("Failed to open video decoder");
-        m_stateMachine->forceState(PlayerState::Error);
-        emit errorOccurred(QStringLiteral("Failed to open video decoder"));
-        return;
-    }
-
-    LOG_INFO("Video decoder opened, starting playback threads");
-
-    AVStream* vs = m_demuxThread->videoStream();
-    if (vs && vs->avg_frame_rate.num > 0 && vs->avg_frame_rate.den > 0) {
-        double fps = av_q2d(vs->avg_frame_rate);
-        double frameDurationUs = (1.0 / fps) * 1000000.0;
-        m_renderScheduler->setFrameDuration(frameDurationUs);
-        LOG_INFO("Frame rate: %.2f fps, frame duration: %.0f us", fps, frameDurationUs);
-    } else {
-        m_renderScheduler->setFrameDuration(33333.0);
-        LOG_INFO("Frame rate unknown, defaulting to 30 fps, threshold 50ms");
-    }
-
-    m_videoDecodeThread->start();
-    m_renderScheduler->start();
+    m_lifecycle->close();
 }
 
 PlayerState RTSPlayer::state() const {

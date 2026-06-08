@@ -16,6 +16,7 @@ enum class PlayerState : int {
     Stopped,
     Connecting,
     Playing,
+    Recovering,
     Reconnecting,
     Error,
     Closing
