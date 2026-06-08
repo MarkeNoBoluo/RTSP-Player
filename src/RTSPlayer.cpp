@@ -112,6 +112,18 @@ void RTSPlayer::onStreamInfoReady() {
     }
 
     LOG_INFO("Video decoder opened, starting playback threads");
+
+    AVStream* vs = m_demuxThread->videoStream();
+    if (vs && vs->avg_frame_rate.num > 0 && vs->avg_frame_rate.den > 0) {
+        double fps = av_q2d(vs->avg_frame_rate);
+        double frameDurationUs = (1.0 / fps) * 1000000.0;
+        m_renderScheduler->setFrameDuration(frameDurationUs);
+        LOG_INFO("Frame rate: %.2f fps, frame duration: %.0f us", fps, frameDurationUs);
+    } else {
+        m_renderScheduler->setFrameDuration(33333.0);
+        LOG_INFO("Frame rate unknown, defaulting to 30 fps, threshold 50ms");
+    }
+
     m_videoDecodeThread->start();
     m_renderScheduler->start();
 }

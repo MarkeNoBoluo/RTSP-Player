@@ -17,12 +17,13 @@ public:
     ~RenderScheduler() override;
 
     void stop();
+    void setFrameDuration(double frameDurationUs);
 
 protected:
     void run() override;
 
 private:
-    bool shouldDrop(int64_t pts) const;
+    bool shouldDrop(int64_t latenessUs) const;
 
     VideoFrameQueue*  m_frameQueue;
     AVClock*          m_clock;
@@ -30,5 +31,5 @@ private:
     PlayerStats*      m_stats;
 
     std::atomic<bool> m_running{false};
-    int               m_dropThresholdUs = 30000;
+    double            m_frameDurationUs = 0.0;
 };

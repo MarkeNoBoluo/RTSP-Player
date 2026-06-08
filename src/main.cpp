@@ -85,10 +85,12 @@ int main(int argc, char* argv[]) {
     auto* timer = new QTimer(&window);
     QObject::connect(timer, &QTimer::timeout, [&]() {
         auto* stats = player.stats();
-        statsLabel->setText(QString("Decoded: %1 | Rendered: %2 | Dropped: %3")
+        int64_t latenessMs = stats->lastLatenessUs.load() / 1000;
+        statsLabel->setText(QString("Decoded: %1 | Rendered: %2 | Dropped: %3 | Lateness: %4ms")
             .arg(stats->framesDecoded.load())
             .arg(stats->framesRendered.load())
-            .arg(stats->framesDropped.load()));
+            .arg(stats->framesDropped.load())
+            .arg(latenessMs));
     });
     timer->start(1000);
 

@@ -21,4 +21,5 @@ void PlayerStats::reset() {
     framesDropped  = 0;
     reconnectCount = 0;
     queueVideoDurationMs = 0;
+    lastLatenessUs = 0;
 }
