@@ -26,6 +26,7 @@ struct VideoFrame {
     AVFrame* frame = nullptr;
     int64_t  pts   = AV_NOPTS_VALUE;
     int64_t  presentTime = 0;
+    int      serial = 0;
 };
 
 struct ClockPoint {

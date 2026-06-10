@@ -9,40 +9,35 @@ class PlayerStats;
 
 class AudioRingBuffer {
 public:
+    struct Chunk {
+        uint8_t* data = nullptr;
+        int32_t  len = 0;
+        double   pts = 0.0;
+        int      serial = 0;
+    };
+
     AudioRingBuffer(int bufferMs = 100);
     ~AudioRingBuffer();
 
     void setStats(PlayerStats* stats) { m_stats = stats; }
 
     bool write(const uint8_t* data, int len, double pts, int serial);
-    int  read(uint8_t* dst, int len, double* outPts);
+    int  read(uint8_t* dst, int len, double* outPts, int* outChunkOffset);
     void flush();
     void abort();
     int  serial() const { return m_serial.load(); }
-
-    // 写指针位置（对应已写入的样本数），用于 audio clock 计算
-    double writtenPts() const { return m_writtenPts.load(std::memory_order_acquire); }
+    void setSerial(int s) { m_serial.store(s); }
 
 private:
-    int bytesPerMs() const;
-
-    static constexpr int kSampleRate = 48000;
-    static constexpr int kChannels   = 2;
-    static constexpr int kBytesPerSample = 2;  // s16
+    static constexpr int kMaxChunks = 32;
 
     int m_bufferMs;
-    int m_totalSize;
-    uint8_t* m_buffer;
+    Chunk m_chunks[kMaxChunks];
 
-    // 环形读写位置
-    int m_writePos = 0;
-    int m_readPos  = 0;
-    int m_avail    = 0;  // 当前可读字节数
-
-    // PTS 追踪
-    double m_ptsOffset = 0.0;
-    int    m_ptsWritePos = 0;
-    std::atomic<double> m_writtenPts{0.0};
+    int m_writeIdx = 0;
+    int m_readIdx  = 0;
+    int m_readOffset = 0;  // bytes already consumed from current chunk
+    int m_avail = 0;       // number of readable chunks
 
     std::atomic<int> m_serial{0};
 

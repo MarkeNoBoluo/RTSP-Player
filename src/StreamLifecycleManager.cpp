@@ -213,7 +213,7 @@ bool StreamLifecycleManager::initDecoders() {
         m_videoCodecCtx = avcodec_alloc_context3(codec);
         if (!m_videoCodecCtx) return false;
         avcodec_parameters_to_context(m_videoCodecCtx, m_videoCodecPar);
-        m_videoCodecCtx->thread_count = 2;
+        m_videoCodecCtx->thread_count = 0;
         if (avcodec_open2(m_videoCodecCtx, codec, nullptr) < 0) return false;
         LOG_INFO("Video decoder opened: %dx%d", m_videoCodecCtx->width, m_videoCodecCtx->height);
     }
@@ -290,8 +290,6 @@ void StreamLifecycleManager::startThreads() {
 
 void StreamLifecycleManager::shutdownPipeline() {
     LOG_INFO("Shutting down pipeline");
-
-    incrementSerial();
 
     if (m_reconnectTimerId) {
         SDL_RemoveTimer(m_reconnectTimerId);

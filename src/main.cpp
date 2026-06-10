@@ -1,6 +1,11 @@
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 
+extern "C" {
+__declspec(dllimport) unsigned int __stdcall timeBeginPeriod(unsigned int);
+__declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
+}
+
 #include "RTSPlayer.h"
 #include "SDLRenderer.h"
 #include "PlayerStats.h"
@@ -45,6 +50,8 @@ int main(int argc, char* argv[]) {
         LOG_ERROR("SDL_Init failed: %s", SDL_GetError());
         return 1;
     }
+
+    timeBeginPeriod(1);
 
     SDLRenderer renderer("RTSP Player", 1280, 720);
 
@@ -107,6 +114,7 @@ int main(int argc, char* argv[]) {
     }
 
     player.close();
+    timeEndPeriod(1);
     SDL_Quit();
     return 0;
 }

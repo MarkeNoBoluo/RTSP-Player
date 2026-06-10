@@ -84,6 +84,7 @@ void DemuxThread::run() {
         }
 
         int curSerial = m_serial.load(std::memory_order_acquire);
+        // LOG_DEBUG("Demux pkt: stream=%d size=%d", pkt->stream_index, pkt->size);
         if (pkt->stream_index == m_videoStream->index) {
             m_videoQueue->push(pkt, curSerial);
         } else if (m_audioStream && pkt->stream_index == m_audioStream->index) {

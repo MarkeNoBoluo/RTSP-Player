@@ -47,5 +47,5 @@ private:
     std::condition_variable m_cond;
     std::atomic<bool>       m_abort{false};
     std::atomic<bool>       m_keyFrameDropped{false};
-    int                     m_totalDurationUs = 0;
+    int64_t                 m_totalDurationUs = 0;
 };

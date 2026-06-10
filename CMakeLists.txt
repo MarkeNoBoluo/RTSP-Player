@@ -57,6 +57,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${AVCODEC_LIBRARY}
     ${AVUTIL_LIBRARY}
     ${SWRESAMPLE_LIBRARY}
+    winmm
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

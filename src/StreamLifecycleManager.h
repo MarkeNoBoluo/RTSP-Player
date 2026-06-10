@@ -82,7 +82,7 @@ private:
 
     int                  m_reconnectTimerId = 0;
     int                  m_backoffCount     = 0;
-    bool                 m_audioEnabled     = false; // 音频解码是否启用
+    bool                 m_audioEnabled     = true;
 
     std::atomic<uint64_t> m_generation{1};
     std::string           m_url;

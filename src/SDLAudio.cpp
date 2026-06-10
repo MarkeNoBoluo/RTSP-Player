@@ -5,6 +5,7 @@
 #include "logger/Logger.h"
 
 #include <SDL.h>
+#include <cstring>
 
 SDLAudio::SDLAudio(AudioRingBuffer* ringBuffer, AVClock* clock, PlayerStats* stats)
     : m_ringBuffer(ringBuffer)
@@ -62,13 +63,18 @@ void SDLAudio::sdlCallback(void* userdata, unsigned char* stream, int len) {
     auto* self = static_cast<SDLAudio*>(userdata);
 
     double pts = 0.0;
-    int read = self->m_ringBuffer->read(stream, len, &pts);
+    int chunkOffset = 0;
+    int read = self->m_ringBuffer->read(stream, len, &pts, &chunkOffset);
 
     if (read < len) {
         memset(stream + read, 0, len - read);
     }
 
     if (read > 0) {
-        self->m_clock->setAudioClock(pts + (double)read / (self->m_sampleRate * self->m_channels * 2));
+        self->m_currentPts = pts;
+        self->m_chunkConsumed = chunkOffset;
+        double audioClock = pts + (double)chunkOffset
+            / (self->m_sampleRate * self->m_bytesPerFrame);
+        self->m_clock->setAudioClock(audioClock);
     }
 }

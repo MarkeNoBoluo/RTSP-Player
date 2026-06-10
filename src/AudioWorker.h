@@ -45,6 +45,7 @@ private:
     SwrContext*        m_swrCtx   = nullptr;
     FILE*              m_wavFile  = nullptr;
     int                m_dataSize = 0;
+    bool               m_writeWavEnabled = false;
 
     std::atomic<bool>  m_running{false};
     std::atomic<int>   m_serial{0};

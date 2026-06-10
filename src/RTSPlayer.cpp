@@ -81,13 +81,13 @@ void RTSPlayer::videoRefresh() {
     if (!m_frameQueue->hasNewFrame()) return;
 
     int globalSerial = pktSerial();
-    int frameSerial = m_frameQueue->peekSerial();
+    int frameSerial = m_frameQueue->peekDisplaySerial();
     if (frameSerial >= 0 && frameSerial != globalSerial) {
-        m_frameQueue->discardRender();
+        m_frameQueue->discardAndAdvance();
         return;
     }
 
-    int64_t pts = m_frameQueue->peekPts();
+    int64_t pts = m_frameQueue->peekDisplayPts();
     if (pts < 0) return;
 
     if (m_clock->isReady()) {
@@ -132,7 +132,7 @@ void RTSPlayer::videoRefresh() {
             if (m_consecutiveDrops >= 2 && latencyUs < 200000) {
                 // Burst recovery: render to re-anchor video clock
             } else {
-                m_frameQueue->discardRender();
+                m_frameQueue->discardAndAdvance();
                 m_stats->framesDropped++;
                 m_consecutiveDrops++;
 
@@ -152,7 +152,7 @@ void RTSPlayer::videoRefresh() {
         }
     }
 
-    AVFrame* frame = m_frameQueue->renderFrame();
+    AVFrame* frame = m_frameQueue->displayFrame();
     if (!frame || !frame->data[0]) return;
 
     int64_t displayBeforeUs = av_gettime_relative();

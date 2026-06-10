@@ -26,4 +26,9 @@ private:
     unsigned int m_deviceId = 0;
     int m_sampleRate  = 48000;
     int m_channels    = 2;
+
+    // Per-chunk PTS tracking
+    double m_currentPts     = 0.0;
+    int    m_chunkConsumed  = 0;
+    int    m_bytesPerFrame = 4;  // stereo s16: 2ch × 2bytes
 };
