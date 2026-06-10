@@ -75,6 +75,12 @@ void VideoDecodeThread::run() {
 
         timeoutCount = 0;
 
+        // If IDR was dropped from queue, flush decoder to prevent corruption
+        if (m_queue->checkKeyFrameDropped()) {
+            LOG_WARN("VideoDecode: IDR was dropped, flushing decoder");
+            avcodec_flush_buffers(m_codecCtx);
+        }
+
         int ret = avcodec_send_packet(m_codecCtx, pkt);
         av_packet_unref(pkt);
 

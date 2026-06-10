@@ -43,6 +43,7 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
             m_totalDurationUs -= m_queue.front().durationUs;
             av_packet_free(&m_queue.front().pkt);
             m_queue.pop_front();
+            m_keyFrameDropped.store(true, std::memory_order_release);
             LOG_WARN("PacketQueue dropping oldest key frame, queue=%dms", m_totalDurationUs / 1000);
         }
     }
@@ -107,4 +108,8 @@ int PacketQueue::size() {
 
 int PacketQueue::durationMs() const {
     return m_totalDurationUs / 1000;
+}
+
+bool PacketQueue::checkKeyFrameDropped() {
+    return m_keyFrameDropped.exchange(false, std::memory_order_acq_rel);
 }

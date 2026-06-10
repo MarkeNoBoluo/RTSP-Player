@@ -19,6 +19,7 @@ AudioWorker::AudioWorker(AVCodecContext* codecCtx, AVRational timeBase,
     , m_queue(queue)
     , m_clock(clock)
     , m_ringBuffer(ringBuffer)
+    , m_writeWavEnabled(false)
 {
 }
 
@@ -92,25 +93,8 @@ void AudioWorker::run() {
 
     LOG_INFO("Audio worker starting");
 
-    int64_t layout = (m_codecCtx->channel_layout && m_codecCtx->channels ==
-        av_get_channel_layout_nb_channels(m_codecCtx->channel_layout))
-        ? m_codecCtx->channel_layout
-        : static_cast<int64_t>(av_get_default_channel_layout(m_codecCtx->channels));
-
-    m_swrCtx = swr_alloc_set_opts(nullptr,
-        AV_CH_LAYOUT_STEREO, (AVSampleFormat)kTargetFormat, kTargetRate,
-        layout, m_codecCtx->sample_fmt, m_codecCtx->sample_rate,
-        0, nullptr);
-    if (!m_swrCtx || swr_init(m_swrCtx) < 0) {
-        LOG_ERROR("swr_init failed: in=%dHz/%dch/%d out=%dHz/stereo/s16",
-                  m_codecCtx->sample_rate, m_codecCtx->channels, m_codecCtx->sample_fmt);
-        if (m_swrCtx) swr_free(&m_swrCtx);
-        m_running = false;
-        return;
-    }
-
     m_wavFile = fopen(kWavPath, "wb");
-    if (m_wavFile) {
+    if (m_wavFile && m_writeWavEnabled) {
         writeWavHeader();
         LOG_INFO("WAV file opened for diagnostic: %s", kWavPath);
     }
@@ -143,17 +127,47 @@ void AudioWorker::run() {
         }
         timeoutCount = 0;
 
+        // Check serial BEFORE send_packet to avoid flushing a just-sent packet
+        int newSerial = m_serial.load(std::memory_order_acquire);
+        if (newSerial != curSerial) {
+            curSerial = newSerial;
+            avcodec_flush_buffers(m_codecCtx);
+            if (m_swrCtx) {
+                swr_free(&m_swrCtx);
+                m_swrCtx = nullptr;
+            }
+        }
+
         int ret = avcodec_send_packet(m_codecCtx, pkt);
         av_packet_unref(pkt);
         if (ret < 0) continue;
-
-        curSerial = m_serial.load(std::memory_order_acquire);
 
         while (true) {
             ret = avcodec_receive_frame(m_codecCtx, frame);
             if (ret == AVERROR(EAGAIN)) break;
             if (ret == AVERROR_EOF) break;
             if (ret < 0) break;
+
+            if (!m_swrCtx) {
+                int inRate = frame->sample_rate > 0 ? frame->sample_rate : kTargetRate;
+                int inChannels = frame->channels > 0 ? frame->channels : kTargetChannels;
+                int64_t inLayout = (frame->channel_layout && inChannels ==
+                    av_get_channel_layout_nb_channels(frame->channel_layout))
+                    ? frame->channel_layout
+                    : av_get_default_channel_layout(inChannels);
+
+                m_swrCtx = swr_alloc_set_opts(nullptr,
+                    AV_CH_LAYOUT_STEREO, (AVSampleFormat)kTargetFormat, kTargetRate,
+                    inLayout, (AVSampleFormat)frame->format, inRate,
+                    0, nullptr);
+                if (!m_swrCtx || swr_init(m_swrCtx) < 0) {
+                    LOG_ERROR("swr_init failed: in=%dHz/%dch out=%dHz/stereo", inRate, inChannels);
+                    if (m_swrCtx) swr_free(&m_swrCtx);
+                    m_running = false;
+                    break;
+                }
+                LOG_INFO("Audio swr: %dHz/%dch -> %dHz/stereo/s16", inRate, inChannels, kTargetRate);
+            }
 
             int dstSamples = swr_get_out_samples(m_swrCtx, frame->nb_samples);
             int dstBufSize = av_samples_get_buffer_size(nullptr, kTargetChannels,
@@ -170,7 +184,7 @@ void AudioWorker::run() {
 
             int actualSize = converted * kTargetChannels * 2;
 
-            if (m_wavFile) {
+            if (m_wavFile && m_writeWavEnabled) {
                 fwrite(dstBuf, 1, actualSize, m_wavFile);
                 m_dataSize += actualSize;
             }
@@ -192,7 +206,7 @@ void AudioWorker::run() {
         }
     }
 
-    if (m_wavFile) {
+    if (m_wavFile && m_writeWavEnabled) {
         updateWavHeader();
         fclose(m_wavFile);
         m_wavFile = nullptr;

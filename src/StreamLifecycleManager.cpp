@@ -29,7 +29,7 @@ StreamLifecycleManager::StreamLifecycleManager(
     , m_audioQueue(audioQ)
     , m_frameQueue(frameQ)
     , m_clock(clock)
-    ,m_audioEnabled(false) // 默认禁用音频解码
+    ,m_audioEnabled(true)
 {
     m_stats->initCsv("stats.csv");
 }
@@ -127,8 +127,8 @@ bool StreamLifecycleManager::initDemux(const char* url) {
 
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);
-    av_dict_set(&opts, "probesize", "32768", 0);
-    av_dict_set(&opts, "analyzeduration", "100000", 0);
+    av_dict_set(&opts, "probesize", "5000000", 0);
+    av_dict_set(&opts, "analyzeduration", "5000000", 0);
     av_dict_set(&opts, "max_delay", "100000", 0);
 
     int ret = avformat_open_input(&m_fmtCtx, url, nullptr, &opts);
@@ -143,7 +143,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     }
 
     m_fmtCtx->flags |= AVFMT_FLAG_NOBUFFER;
-    m_fmtCtx->max_analyze_duration = 100000;
+    m_fmtCtx->max_analyze_duration = 5000000;
 
     ret = avformat_find_stream_info(m_fmtCtx, nullptr);
     if (ret < 0) {
@@ -158,11 +158,23 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     int videoIdx = av_find_best_stream(m_fmtCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     int audioIdx = av_find_best_stream(m_fmtCtx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
 
+    // Fallback: if av_find_best_stream fails, manually search for audio stream
+    if (audioIdx < 0) {
+        for (unsigned i = 0; i < m_fmtCtx->nb_streams; i++) {
+            if (m_fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                audioIdx = (int)i;
+                LOG_INFO("Audio stream fallback: found stream %d (codec=%d)",
+                         audioIdx, m_fmtCtx->streams[i]->codecpar->codec_id);
+                break;
+            }
+        }
+    }
+
     if (videoIdx >= 0) {
         m_videoStream   = m_fmtCtx->streams[videoIdx];
         m_videoCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_videoCodecPar, m_videoStream->codecpar);
-        m_videoQueue->init(m_videoStream->time_base, 200);
+        m_videoQueue->init(m_videoStream->time_base, 1000);
         LOG_INFO("Video stream: index=%d, codec=%d, %dx%d",
                  videoIdx, m_videoCodecPar->codec_id,
                  m_videoCodecPar->width, m_videoCodecPar->height);
@@ -278,6 +290,8 @@ void StreamLifecycleManager::startThreads() {
 
 void StreamLifecycleManager::shutdownPipeline() {
     LOG_INFO("Shutting down pipeline");
+
+    incrementSerial();
 
     if (m_reconnectTimerId) {
         SDL_RemoveTimer(m_reconnectTimerId);
@@ -412,4 +426,5 @@ void StreamLifecycleManager::incrementSerial() {
     if (m_demuxThread) m_demuxThread->setSerial(s);
     if (m_decodeThread) m_decodeThread->setSerial(s);
     if (m_audioWorker && m_audioEnabled) m_audioWorker->setSerial(s);
+    if (m_audioRingBuffer && m_audioEnabled) m_audioRingBuffer->setSerial(s);
 }

@@ -28,6 +28,9 @@ public:
     int  size();
     int  durationMs() const;
 
+    // Returns true if a key frame was dropped since last check (clears flag)
+    bool checkKeyFrameDropped();
+
 private:
     struct PacketNode {
         AVPacket* pkt = nullptr;
@@ -43,5 +46,6 @@ private:
     std::mutex             m_mutex;
     std::condition_variable m_cond;
     std::atomic<bool>       m_abort{false};
+    std::atomic<bool>       m_keyFrameDropped{false};
     int                     m_totalDurationUs = 0;
 };
