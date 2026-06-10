@@ -3,33 +3,43 @@
 ## 1. 概述
 
 **目标**: 低延迟 RTSP 拉流播放器，用于投影场景。  
-**平台**: Windows, Qt 5.14.2, FFmpeg C API, CMake  
-**核心诉求**: 秒开、低延迟、实时交互优先、视频链路稳定
+**平台**: Windows, MSVC 2017 x86, C++17, FFmpeg C API (4.2.x), SDL2, CMake  
+**核心诉求**: 秒开、低延迟、实时交互优先、音视频链路稳定
+
+> **v2 架构变更 (2026-06-10)**: 移除 Qt 依赖，SDL2 替代 Qt Multimedia/OpenGL，std::thread 替代 QThread。详见 `docs/superpowers/plans/2026-06-10-sdl2-migration-plan.md`。
 
 ---
 
-## 2. 线程模型（6 线程）
+## 2. 线程模型（4 线程 + SDL 回调）
 
 ```
-UI Thread ── RTSPlayer, GLVideoWidget::paintGL()
-              │ invokeMethod(update)
-              │
-Render Scheduler Thread ── AV Sync / Frame Timing / Drop / invokeMethod(update)
-              │ FrameQueue (triple buffer)
-              │
-Video Decode Thread ── 解码 AVPacket → YUV420P AVFrame
-              │ PacketQueue v (200ms)
-              │
-Demux Thread ── av_read_frame() → 分发
-              │ PacketQueue a (200ms)
-              │                              ┌─ Phase 4 ─┐
-Audio Thread ── decode + resample + QAudioOutput
+Main Thread (高频 tick ~1ms)
+  ├── SDL_PollEvent() → 事件处理 (quit / key / window / timer)
+  ├── videoRefresh() → A/V sync → IRenderer::displayFrame()
+  │       │                │
+  │       │  AVClock.drift() ← audioClock (SDL 回调设置, 精确)
+  │       │
+  │       ▼
+  │  VideoFrameQueue (4 slot + serial) ← VideoDecode Thread
+  │
+  └── SDL_Delay(1)
+
+Demux Thread (std::thread) ── av_read_frame() + serial → PacketQueue(video) / PacketQueue(audio)
+VideoDecode Thread (std::thread) ── avcodec → VideoFrameQueue (4 slot)
+AudioDecode Thread (std::thread) ── avcodec → swresample → AudioRingBuffer (100ms)
+
+SDL Audio Callback Thread (SDL 内部管理)
+  └── read AudioRingBuffer → memcpy → SDL stream
+  └── setAudioClock(pcm_pts + consumed_samples / sample_rate)
 ```
 
 **关键约束**：
-- Render Scheduler **不做 OpenGL**，仅通过 `invokeMethod(update)` 通知 UI Thread
-- UI Thread 的 `paintGL()` 做实际 OpenGL 渲染
-- `updatePending` flag 防 `update()` 风暴
+- 主循环 1ms tick 高频驱动，不依赖 SDL timer 精度
+- videoRefresh() 自己判断帧显示时机，不做跨线程调度
+- SDL 音频回调只做 memcpy + 设时钟，不解码（解码在独立 AudioDecode Thread）
+- IRenderer 抽象接口，Phase 1 为 SDLRenderer，未来可切 D3D11Renderer
+- Serial 机制保证 reconnect 后旧数据自动失效
+- Windows 定时器精度：`SDL_Init` 后需调用 `timeBeginPeriod(1)` 将系统时钟粒度从默认 ~15.6ms 提升至 1ms，否则主循环 `SDL_Delay(1)` 实际阻塞 ~15ms。退出前调用 `timeEndPeriod(1)` 恢复
 
 ---
 
@@ -37,18 +47,20 @@ Audio Thread ── decode + resample + QAudioOutput
 
 | 模块 | 线程 | 职责 |
 |------|------|------|
-| `RTSPlayer` | UI | 总控 |
-| `PlayerStateMachine` | 任意 | 6 状态机 |
-| `StreamLifecycleManager` | 任意 | open/reconnect/flush/close 全生命周期 |
-| `DemuxThread` | 独立 | `av_read_frame()` → PacketQueue |
-| `VideoDecodeThread` | 独立 | 解码 → VideoFrameQueue |
-| `RenderScheduler` | 独立 | 帧 timing / drop / `invokeMethod(update)` |
-| `AudioThread` | 独立 | Phase 4 实现 |
-| `PacketQueue` | 跨线程 | 环形缓冲，KeyFrame 感知 Drop，容量 200ms |
-| `VideoFrameQueue` | 跨线程 | Triple Buffer + 固定 AVFrame 池 + `av_frame_move_ref` |
-| `AVClock` | 跨线程 | VideoClock (pts + systemTime)，Phase 5 加入 audioClock |
-| `GLVideoWidget` | UI | QOpenGLWidget，paintGL() YUV Shader |
-| `PlayerStats` | 跨线程 | 性能统计（fps / drop / latency / queue） |
+| `main.cpp` | Main | SDL 窗口创建 + 高频 tick 主循环 + 事件分发 |
+| `RTSPlayer` | Main | 总控（普通类，无 QObject） |
+| `PlayerStateMachine` | 任意 | 6 状态机（不变） |
+| `StreamLifecycleManager` | 任意 | open/reconnect/flush/close 全生命周期 + serial 管理 |
+| `DemuxThread` | 独立 std::thread | `av_read_frame()` → PacketQueue (带 serial) |
+| `VideoDecodeThread` | 独立 std::thread | 解码 → VideoFrameQueue (4 slot, 带 serial) |
+| `AudioWorker` | 独立 std::thread | 解码 + swresample → AudioRingBuffer (100ms) |
+| `PacketQueue` | 跨线程 | 环形缓冲，KeyFrame 感知 Drop，容量 200ms (video) / 80ms (audio) |
+| `VideoFrameQueue` | 跨线程 | 4-Slot 环形缓冲 + serial |
+| `AudioRingBuffer` | 跨线程 | 100ms 环形缓冲 + PTS chunk 追踪 + serial |
+| `AVClock` | 跨线程 | VideoClock + AudioClock (pts + systemTime)，drift() |
+| `SDLRenderer` | Main | IRenderer 实现：SDL_Window + SDL_Renderer + SDL_Texture |
+| `SDLAudio` | Main (init) / SDL 回调 | SDL 音频设备 + 回调注册 |
+| `PlayerStats` | 跨线程 | 性能统计（fps / drop / latency / queue / audio underrun） |
 
 ---
 
@@ -57,13 +69,13 @@ Audio Thread ── decode + resample + QAudioOutput
 ### 4.1 PlayerStateMachine (6 状态)
 
 ```
-Stopped → Connecting → Playing → Reconnecting → Playing
-              ↓            ↓           ↓
-             Error        Error       Error
-              │            │           │
-    重连预算耗尽:       重连预算>0:    重连预算>0:
-              │            │           │
-         → Stopped    → Reconnecting → Reconnecting
+Stopped → Connecting → Playing → Recovering → Reconnecting → Playing
+              ↓            ↓           ↓                ↓
+             Error        Error       Error           Error
+              │            │           │                │
+    重连预算耗尽:       重连预算>0:    重连预算>0:       重连预算耗尽:
+              │            │           │                │
+          → Stopped    → Reconnecting → Reconnecting → Stopped
                      重连预算耗尽:    重连预算耗尽:
                           │               │
                       → Stopped       → Stopped
@@ -71,173 +83,131 @@ Stopped → Connecting → Playing → Reconnecting → Playing
 ```
 
 ```cpp
-enum class State { Stopped, Connecting, Playing, Reconnecting, Error, Closing };
-// std::atomic<State>, 所有切换通过 compare_exchange
-// Error 出边: Reconnecting（重连预算 > 0, StreamLifecycleManager 触发）
-//            Stopped（重连预算耗尽 或 用户手动 stop）
+enum class PlayerState : int { Stopped, Connecting, Playing, Recovering, Reconnecting, Error, Closing };
+
+class PlayerStateMachine {
+public:
+    PlayerState state() const;
+    bool        transition(PlayerState from, PlayerState to);  // CAS
+    void        forceState(PlayerState s);
+private:
+    std::atomic<int> m_state{static_cast<int>(PlayerState::Stopped)};
+};
 ```
 
-### 4.2 VideoFrameQueue（Triple Buffer + 固定池 + 无锁设计）
+### 4.2 VideoFrameQueue（4-Slot + Serial）
 
-三个独立 slot: 0=display, 1=render(待显示), 2=decode(写入中)。
+四个独立 slot：decode → render → display 流水线。
 
 ```cpp
+static constexpr int kSlotCount = 4;
+
 class VideoFrameQueue {
 public:
     // VideoDecodeThread 调用
-    // 内部 av_frame_move_ref() 到 decode slot, 然后 atomic swap decode↔render
-    bool writeFrame(AVFrame* srcFrame, int64_t pts);
+    bool writeFrame(AVFrame* srcFrame, int64_t pts, int serial);
 
-    // --- RenderScheduler 线程调用 (独占) ---
-    void    waitForNewFrame(int timeoutMs);   // cv wait, timeout 10ms
-    int64_t peekRenderPts() const;           // 只读 render slot pts; 无新帧返回 -1
-    void    discardRender();                 // no-op, render slot 由下次 writeFrame 自然覆盖
-    bool    commitDisplay();                 // swap render↔display; 有帧返回 true
+    // Main Thread (videoRefresh) 调用
+    int64_t peekDisplayPts() const;        // 非阻塞，无帧返回 -1
+    int     peekDisplaySerial() const;     // 检查 serial 是否匹配
+    bool    advanceDisplay();              // 推进 display 指针
+    bool    discardAndAdvance();           // 丢帧
 
-    // UI Thread (paintGL) 调用
-    const VideoFrame* displayFrame() const;   // 只读 display slot, 无锁
+    // Main Thread (paint) 调用
+    AVFrame* displayFrame();               // 返回当前 display slot 的 AVFrame*
 
-    // StreamLifecycleManager 调用 (停机顺序保证后)
+    // StreamLifecycleManager 调用
     void flush();
-    void notifyAll();                        // cv notify_all, RenderScheduler stop 时解阻塞
+    void notifyAll();
 
 private:
-    AVFrame*          m_avFrames[3];           // 永久 alloc, 统一生命周期
-    VideoFrame        m_slots[3];              // { pts, presentTime }
-    std::atomic<int>  m_renderIdx{1};          // render 槽索引
-    int               m_displayIdx{0};         // 仅 UI 线程读 + RenderScheduler 线程写
-    int               m_decodeIdx{2};          // 仅 Decode 线程写
-    std::condition_variable m_newFrameCv;
-    std::mutex              m_cvMutex;
+    AVFrame*   m_avFrames[kSlotCount];     // 永久 alloc
+    VideoFrame m_slots[kSlotCount];
+    int        m_serial[kSlotCount];
+    int        m_renderIdx{2};
+    int        m_displayIdx{0};
+    int        m_decodeIdx{3};
+    int        m_width{0}, m_height{0};
 };
 ```
 
-**接口实现细节**：
+**Slot 流转规则**：
 
-```cpp
-// writeFrame: 写入 decodeIdx slot → atomic swap decode↔render → notify cv
-bool VideoFrameQueue::writeFrame(AVFrame* src, int64_t pts) {
-    av_frame_move_ref(m_avFrames[m_decodeIdx], src);
-    m_slots[m_decodeIdx].pts = pts;
-    m_decodeIdx = m_renderIdx.exchange(m_decodeIdx, std::memory_order_acq_rel);
-    m_newFrameCv.notify_one();
-    return true;
-}
+四个 slot 由三个指针分摊流水线阶段，余一个 slot 做缓冲，避免生产/消费撞车：
 
-// peekRenderPts: 只读 render slot pts, 无 swap (m_displayIdx 是普通 int, RenderScheduler 线程独占访问)
-int64_t VideoFrameQueue::peekRenderPts() const {
-    int ri = m_renderIdx.load(std::memory_order_acquire);
-    if (ri == m_displayIdx) return -1;
-    return m_slots[ri].pts;
-}
+```
+初始分布:  displayIdx=0  renderIdx=2  decodeIdx=3  →  空闲槽=1
 
-// discardRender: 空实现; render slot 由下一次 writeFrame 的 decode↔render swap 自然覆盖
-void VideoFrameQueue::discardRender() {}
+  decodeIdx ──writeFrame()──▶ 写入完成 → advance: (decodeIdx + 1) % 4
+  renderIdx ──等待解码完成──▶ 消费解码槽 → (renderIdx 推进到最新可用 slot)
+  displayIdx ─advanceDisplay()─▶ 消费渲染槽 → displayIdx = renderIdx（renderIdx 再推进）
 
-// commitDisplay: swap render↔display
-bool VideoFrameQueue::commitDisplay() {
-    int ri = m_renderIdx.load(std::memory_order_acquire);
-    if (ri == m_displayIdx) return false;
-    m_renderIdx.store(m_displayIdx, std::memory_order_release);
-    m_displayIdx = ri;
-    return true;
-}
-
-// displayFrame: 仅 UI 线程调用, 只读
-const VideoFrame* VideoFrameQueue::displayFrame() const {
-    return &m_slots[m_displayIdx];
-}
-
-// flush: 依赖停机顺序保证安全 (无写入者 + 无 swap 调用者)
-void VideoFrameQueue::flush() {
-    for (int i = 0; i < 3; i++) av_frame_unref(m_avFrames[i]);
-    m_renderIdx.store(1, std::memory_order_relaxed);
-    m_displayIdx = 0;
-    m_decodeIdx  = 2;
-}
-
-// notifyAll: RenderScheduler::stop() 时调用, 解阻塞 waitForNewFrame
-void VideoFrameQueue::notifyAll() {
-    m_newFrameCv.notify_all();
-}
+槽状态机 (per slot):
+  FREE ──writeFrame──▶ WRITING ──写完──▶ READY
+                                               │
+  DISPLAYED ◀──displayFrame()── DISPLAYING ◀── advanceDisplay()
+       │
+       └── decodeIdx 抵达当前位置 → FREE（循环覆盖）
 ```
 
-### 4.3 PacketQueue（KeyFrame 感知 Drop）
+初始三个指针分散分布，确保启动后首帧即可形成 "display 有帧可显、render 有槽可产" 的流水线状态，避免第一帧触发全部指针重排的启动延迟。
+
+**与 v1 的关键区别**：
+- 3 slot → 4 slot（应对 reconnect / burst decode / render stall）
+- 去掉了 `waitForNewFrame(cv)`，主循环 1ms tick 直接非阻塞 peek
+- 新增 serial 字段，reconnect 后旧帧自动失效
+- 去掉了 `commitDisplay()` / `discardRender()` 两步操作，简化为 `advanceDisplay()` / `discardAndAdvance()`
+
+### 4.3 PacketQueue（KeyFrame 感知 Drop + serial）
 
 ```cpp
+struct PacketNode {
+    AVPacket* pkt;
+    int64_t   durationUs;
+    int       serial;         // v2 新增：reconnect 安全
+};
+
 class PacketQueue {
 public:
-    PacketQueue();  // 构造函数不设容量
-
-    // avformat_open_input 成功后调用，此时 time_base 已知
-    // reconnect 时复用 flush()，不重调 init()
     void init(AVRational timeBase, int capacityMs = 200);
-
-    bool push(AVPacket* pkt);   // 超容量: 优先 drop P/B, 保 IDR (AV_PKT_FLAG_KEY)
-    bool pop(AVPacket* pkt, int timeoutMs);
+    bool push(AVPacket* pkt, int serial);   // 超容量: 优先 drop P/B, 保 IDR
+    bool pop(AVPacket* pkt, int timeoutMs); // 返回 false 时 pkt 未填充
+    int  popSerial() const;                 // 获取队列当前 serial
     void flush();
-    void abort();               // 解除 pop 阻塞 (stop 时调用)
-
-private:
-    bool m_initialized = false;   // assert(!m_initialized) 防止重复 init
-    // 环形缓冲 + condition_variable + mutex
-    // 容量 200ms (按流 time_base 换算)
+    void abort();
 };
 ```
 
-### 4.4 RenderScheduler（实时优先，condition_variable 等待）
+### 4.4 AudioRingBuffer（替代 AudioPullDevice）
+
+不继承 QIODevice，纯 C++ 环形缓冲。
 
 ```cpp
-class RenderScheduler {
+class AudioRingBuffer {
 public:
-    void run();                  // 主循环: cv 等待 → peek → drop? → commit → invokeMethod
-    void stop();
-    void setDropThreshold(int ms = 30);
+    AudioRingBuffer(int bufferMs = 100);    // 100ms = 19,200 bytes @ 48kHz stereo s16
+
+    // AudioWorker 解码线程调用
+    bool write(const uint8_t* data, int len, double pts, int serial);
+    // 满 → condition_variable::wait (替代 v1 的忙等待 QThread::msleep(1))
+
+    // SDL 音频回调调用
+    int  read(uint8_t* dst, int len, double* outPts);
+    // 空 → 返回可用量 (≤ len)，调用方补静音
+
+    void flush();
+    void abort();           // 解除 write 阻塞
+    int  serial() const;
 
 private:
-    bool shouldDrop(int64_t pts) const;   // late > 30ms, 首帧保护返回 false
-
-    VideoFrameQueue*  m_frameQueue;
-    AVClock*          m_clock;
-    GLVideoWidget*    m_widget;
-    std::atomic_bool  m_updatePending{false};
-    std::atomic_bool  m_running{false};
+    struct Chunk {
+        uint8_t* data;
+        int32_t  len;
+        double   pts;       // 起始 PTS (秒)
+        int      serial;
+    };
+    // 环形缓冲 + mutex + cv
 };
-```
-
-**主循环实现**：
-
-```cpp
-void RenderScheduler::run() {
-    while (m_running) {
-        m_frameQueue->waitForNewFrame(10ms);
-        if (!m_running) break;
-
-        int64_t pts = m_frameQueue->peekRenderPts();
-        if (pts < 0) continue;           // 无新帧
-
-        if (shouldDrop(pts)) {
-            m_frameQueue->discardRender(); // no-op
-            m_stats->droppedFrames++;
-            continue;
-        }
-
-        m_frameQueue->commitDisplay();    // swap render↔display
-        m_clock->setVideoClock(pts);      // 更新 VideoClock (present time)
-
-        if (!m_updatePending.exchange(true)) {
-            QMetaObject::invokeMethod(m_widget, "update", Qt::QueuedConnection);
-        }
-    }
-}
-
-bool RenderScheduler::shouldDrop(int64_t pts) const {
-    if (!m_clock->isReady()) return false;   // 首帧保护
-    int64_t now = av_gettime_relative();
-    int64_t expected = m_clock->videoClock().systemTime +
-                       (pts - m_clock->videoClock().pts) / av_q2d(m_timeBase) * AV_TIME_BASE;
-    return (expected - now) < -m_dropThreshold * 1000;   // late > 30ms
-}
 ```
 
 ### 4.5 AVClock
@@ -247,148 +217,247 @@ struct ClockPoint { double pts; int64_t systemTime; };  // systemTime 单位: us
 
 class AVClock {
 public:
-    void       setVideoClock(double pts);    // 第一次调用后 isReady → true
+    void       setVideoClock(double pts);    // 主线程 videoRefresh 渲染后调用
     ClockPoint videoClock() const;
-    bool       isReady() const;              // 首帧保护
-    double     drift() const;                // Phase 5 实现
 
-    void       setAudioClock(double pts);    // Phase 4
-    ClockPoint audioClock() const;           // Phase 4
+    void       setAudioClock(double pts);    // SDL 音频回调中调用
+    ClockPoint audioClock() const;
+
+    bool       isReady() const;              // setVideoClock 首次调用后 true
+    double     drift() const;                // audio clock - video clock (秒)
+    void       reset();
 
 private:
     std::atomic<double>  m_videoPts{0.0};
     std::atomic<int64_t> m_videoSysTime{0};
+    std::atomic<bool>    m_videoReady{false};
     std::atomic<double>  m_audioPts{0.0};
     std::atomic<int64_t> m_audioSysTime{0};
-    std::atomic<bool>    m_videoReady{false};
 };
 ```
 
-### 4.6 GLVideoWidget
+**v2 关键变化**：
+- 音频时钟由 SDL 回调设置（而非 AudioWorker 解码时设置）
+- 音频时钟计算公式：`pcm_pts + consumed_samples / sample_rate`
+- 偏差 ≤ 一次 SDL 回调周期（~20ms），v1 偏差可达 200ms
+- `std::atomic<double>` 在 x86 32位平台不保证无锁（取决于编译器），MSVC 通常用 `lock cmpxchg8b` 实现。`drift()` 同时读 video/audio 两个 atomic 值，存在时间窗口内读到 video 旧值 + audio 新值（或反之），偏差 ≤ 一次回调周期（~20ms），在此容忍范围内不追求强一致性，是有意为之
+
+### 4.6 SDLRenderer（IRenderer 实现）
 
 ```cpp
-class GLVideoWidget : public QOpenGLWidget, protected QOpenGLFunctions {
+class IRenderer {
 public:
-    void setDisplayFrame(const VideoFrame* frame);  // 仅在 paintGL 读取前设置, atomic pointer
+    virtual ~IRenderer() = default;
+    virtual bool init(int width, int height) = 0;
+    virtual void displayFrame(AVFrame* frame) = 0;
+    virtual void setWindowSize(int w, int h) = 0;
+    virtual void destroy() = 0;
+};
 
-protected:
-    void initializeGL() override;      // 3×GL_LUMINANCE texture + shader + GL_UNPACK_ALIGNMENT=1
-    void paintGL() override;           // glTexSubImage2D + shader, m_updatePending=false
-    void resizeGL(int w, int h) override;
+class SDLRenderer : public IRenderer {
+public:
+    SDLRenderer(const char* title, int w, int h);
+    ~SDLRenderer() override;
+
+    bool init(int width, int height) override;
+    void displayFrame(AVFrame* frame) override;   // SDL_UpdateYUVTexture + RenderCopy + Present
+    void setWindowSize(int w, int h) override;
+    void destroy() override;
+
+    SDL_Window* window() const { return m_window; }
+    void configureDisplayRect(int winW, int winH); // 保持宽高比的 letterbox
 
 private:
-    GLuint m_textures[3];              // Y, U, V plane
-    QOpenGLShaderProgram* m_program;
-    const VideoFrame*     m_displayFrame;
+    SDL_Window*   m_window   = nullptr;
+    SDL_Renderer* m_renderer = nullptr;
+    SDL_Texture*  m_texture  = nullptr;
+    SDL_Rect      m_dstRect;
+    int           m_texW = 0, m_texH = 0;
 };
 ```
 
-**GL 格式**：YUV420P planar + 3×GL_LUMINANCE，不做格式转换。
+**与 GLVideoWidget v1 的区别**：
+- 无需 OpenGL shader 文件，`SDL_UpdateYUVTexture` 一行替代 65 行 GL 纹理上传
+- 无需 `GL_LUMINANCE` 弃用纹理格式
+- 无需 QOpenGLWidget 继承
+- CPU upload（Phase 1），后续可换 D3D11Renderer GPU direct
+
+### 4.7 SDLAudio（替代 QAudioOutput + AudioPullDevice）
 
 ```cpp
-void GLVideoWidget::initializeGL() {
-    initializeOpenGLFunctions();
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);   // 一次设置, 全局生效
+class SDLAudio {
+public:
+    SDLAudio(AudioRingBuffer* ringBuffer, AVClock* clock, PlayerStats* stats);
+    ~SDLAudio();
 
-    // 创建 shader program (yuv420p.vert / yuv420p.frag)
+    bool init(int sampleRate, int channels);   // SDL_OpenAudioDevice
+    void start();                               // SDL_PauseAudioDevice(0)
+    void stop();                                // SDL_PauseAudioDevice(1)
+    void close();                               // SDL_CloseAudioDevice
 
-    glGenTextures(3, m_textures);
-    // Y: GL_LUMINANCE, width × height
-    // U: GL_LUMINANCE, width/2 × height/2
-    // V: GL_LUMINANCE, width/2 × height/2
-    // 每次分辨率变化时 resizeGL 重新 glTexImage2D
-}
+private:
+    static void sdlCallback(void* userdata, Uint8* stream, int len);
 
-void GLVideoWidget::paintGL() {
-    m_updatePending = false;  // 允许下一次 invokeMethod
-    auto* frame = m_displayFrame;
-    if (!frame || !frame->frame) return;
+    AudioRingBuffer* m_ringBuffer;
+    AVClock*         m_clock;
+    PlayerStats*     m_stats;
+    SDL_AudioDeviceID m_deviceId = 0;
+    int m_sampleRate  = 48000;
+    int m_channels    = 2;
+    int m_bytesPerSample = 4;  // stereo s16 = 4 bytes
 
-    // glTexSubImage2D 上传 Y/U/V 三平面数据 (对齐已设, 不复用 glTexImage2D)
-    for (int i = 0; i < 3; i++) {
-        glBindTexture(GL_TEXTURE_2D, m_textures[i]);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                        i == 0 ? m_width : m_width/2, i == 0 ? m_height : m_height/2,
-                        GL_LUMINANCE, GL_UNSIGNED_BYTE, frame->frame->data[i]);
-    }
-
-    m_program->bind();
-    // draw quad
-}
+    // PTS 追踪
+    double           m_currentPts = 0.0;
+    int              m_chunkConsumed = 0;  // 当前 chunk 内已消费字节数
+};
 ```
 
-### 4.7 StreamLifecycleManager
+### 4.8 StreamLifecycleManager（去 QObject）
 
 ```cpp
 class StreamLifecycleManager {
 public:
+    using StateCallback  = std::function<void(PlayerState)>;
+    using ErrorCallback  = std::function<void(const char*)>;
+
+    StreamLifecycleManager(PlayerStateMachine* sm, PlayerStats* stats,
+                           PacketQueue* videoQ, PacketQueue* audioQ,
+                           VideoFrameQueue* frameQ, AVClock* clock,
+                           IRenderer* renderer);
+
+    void setStateCallback(StateCallback cb)  { m_onState = std::move(cb); }
+    void setErrorCallback(ErrorCallback cb)  { m_onError = std::move(cb); }
+
     bool open(const char* url);
-    bool reconnect();
-    void flush();           // 内部顺序: 停机 → flush → close → 重建
     void close();
-    void setTimeout(int ms = 3000);
-    void setRetryCount(int n);
+
+    IRenderer*    renderer() const { return m_renderer; }
+    PlayerStats*  stats()    const { return m_stats; }
+    PlayerState   state()    const;
 
 private:
-    int m_retryCount = 3;
-    int m_retryBudget;       // reconnect 递减, 耗尽切 Stopped
+    bool initDemux(const char* url);
+    bool initDecoders();
+    void startThreads();
+    void shutdownPipeline();
+
+    void scheduleReconnect();   // SDL_AddTimer → SDL_USEREVENT
+    void doReconnect();
+
+    void incrementSerial() { m_pktSerial.fetch_add(1); }
+
+    // ... members ...
+    std::atomic<int>  m_pktSerial{0};  // v2 新增：serial 机制
+    SDLAudio*         m_sdlAudio = nullptr;  // 替代 QAudioOutput + AudioPullDevice
+    IRenderer*        m_renderer = nullptr;  // 替代 GLVideoWidget
 };
 ```
 
-**Flush / 重连停机顺序**：
+**v2 关键变化**：
+- `signals:` → `std::function<>` 回调
+- `QTimer` → `SDL_AddTimer` (回调中 `SDL_PushEvent` 回主线程)
+- `QAudioOutput` + `AudioPullDevice` → `SDLAudio` + `AudioRingBuffer`
+- `GLVideoWidget` → `IRenderer*`
+- 新增 `m_pktSerial` 管理 reconnect 安全
 
+### 4.9 main.cpp 主循环
+
+```cpp
+int main(int argc, char* argv[]) {
+    Logger::init();
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER);
+    timeBeginPeriod(1);  // 提升系统时钟粒度至 1ms（默认 ~15.6ms）
+
+    RTSPlayer player;
+    player.open(url);
+
+    // ... event loop ...
+
+    player.close();
+    timeEndPeriod(1);
+    SDL_Quit();
+}
 ```
-1. DemuxThread::stop()
-   └── PacketQueue(video)::abort()  // 让 VideoDecodeThread::pop() 解阻塞
-   └── PacketQueue(audio)::abort()  // 让 AudioThread::pop() 解阻塞
-2. VideoDecodeThread::stop() + wait()
-3. AudioThread::stop() + wait()      // Phase 4
-4. RenderScheduler::stop()
-   └── VideoFrameQueue::notifyAll()  // 让 waitForNewFrame() 解阻塞
-5. PacketQueue(video)::flush()
-6. PacketQueue(audio)::flush()
-7. avcodec_flush_buffers(m_codecCtx) // 必须在 avformat_close_input 之前
-8. avformat_close_input(&m_fmtCtx)
-9. avcodec_free_context(&m_codecCtx) // 独立管理 codec context
-10. VideoFrameQueue::flush()
-11. AVClock 重置
-12. avformat_open_input(...)         // 重建
-13. avcodec_open2(...)               // 重建 codec
-14. State → Playing
-```
 
-**interrupt_callback**: 超时 3s，检查 `std::atomic<bool> m_abort` + chrono `lastReadTime`。
-
-### 4.8 PlayerStats
+### 4.10 PlayerStats
 
 ```cpp
 class PlayerStats {
-    std::atomic<double> decodeFps{0};
-    std::atomic<double> renderFps{0};
-    std::atomic<int>    queueDurationMs{0};
-    std::atomic<int>    droppedFrames{0};
-    std::atomic<int>    reconnectCount{0};
-    std::atomic<int>    latencyEstimateMs{0};
+public:
+    // 帧计数器
+    std::atomic<int64_t> framesDecoded{0};
+    std::atomic<int64_t> framesRendered{0};
+    std::atomic<int64_t> framesDropped{0};
+    std::atomic<int>     reconnectCount{0};
+
+    // 时序 (us)
+    std::atomic<int64_t> lastLatenessUs{0};
+    std::atomic<int64_t> maxLatenessUs{0};
+    std::atomic<int64_t> renderSkipBurst{0};
+    std::atomic<int64_t> totalReconnectMs{0};
+
+    // 音频
+    std::atomic<int>     audioUnderruns{0};
+    std::atomic<int>     audioOverruns{0};
+    std::atomic<int>     videoQueuePeakMs{0};
+    std::atomic<int>     audioQueuePeakMs{0};
+
+    // 渲染间距 (us)
+    std::atomic<int64_t> paintIntervalMinUs{0};
+    std::atomic<int64_t> paintIntervalMaxUs{0};
+    std::atomic<int64_t> paintIntervalSumUs{0};
+    std::atomic<int>     paintIntervalCount{0};
+
+    // 单调帧 ID
+    std::atomic<uint64_t> frameId{1};
+    std::atomic<int64_t>  lastCommitUs{0};
+    std::atomic<int64_t>  reconnectStartUs{0};
+
+    // CSV
+    void initCsv(const std::string& path);
+    void writeCsvRow();
+    void closeCsv();
+
+    // 录制辅助 (跨线程安全)
+    void recordPaintInterval(int64_t us);
+    void recordPaintLatency(int64_t us);
+    void recordQueueDepth(int videoMs, int audioMs);
+    void recordSkipBurstEnd();
+
+private:
+    std::mutex   m_csvMutex;
+    std::ofstream m_csvFile;
+    std::string  m_sessionId;
+    bool m_csvHeaderWritten = false;
 };
 ```
 
-### 4.9 Common.h
+### 4.11 Common.h
 
 ```cpp
 #pragma once
 #include <cstdint>
 
-enum class PlayerState { Stopped, Connecting, Playing, Reconnecting, Error, Closing };
+extern "C" {
+#include <libavutil/frame.h>
+#include <libavutil/rational.h>
+#include <libavcodec/avcodec.h>
+}
+
+enum class PlayerState : int {
+    Stopped, Connecting, Playing, Recovering, Reconnecting, Error, Closing
+};
 
 struct VideoFrame {
-    AVFrame* frame = nullptr;    // 指向 VideoFrameQueue 固定池, 外部不管理生命周期
-    int64_t  pts = AV_NOPTS_VALUE;
+    AVFrame* frame = nullptr;
+    int64_t  pts   = AV_NOPTS_VALUE;
     int64_t  presentTime = 0;
+    int      serial = 0;          // v2 新增
 };
 
 struct ClockPoint {
-    double  pts;           // PTS 值 (秒)
-    int64_t systemTime;    // 对应系统时间 (us, av_gettime_relative)
+    double  pts;
+    int64_t systemTime;
 };
 ```
 
@@ -403,25 +472,30 @@ struct ClockPoint {
 - codec context 由 StreamLifecycleManager 独立管理（`avcodec_open2` / `avcodec_free_context`），不跟随 `avformat`
 
 ### Back Pressure
-- PacketQueue push 满 → drop oldest (KeyFrame 优先保留：优先丢 P/B frame，保 IDR)
-- 不做生产者阻塞等待消费者
+- PacketQueue push 满 → drop oldest (优先丢 P/B frame，保 IDR)
+- AudioRingBuffer write 满 → condition_variable::wait（v1 是忙等待 QThread::msleep(1)）
 
-### Update 防风暴
-- `std::atomic_bool m_updatePending` 保证同一时刻只有一个 update 请求在 Qt EventLoop
-- `paintGL` 结束时 `m_updatePending = false`
+### A/V Sync
+- 主循环 videoRefresh() 基于 AVClock::drift() 做视频帧调度
+- 音频时钟由 SDL 回调精确设置（偏差 ~20ms），替代 v1 的 AudioWorker 解码时设置（偏差 0~200ms）
+- video 落后 audio → 减小 delay 追赶；video 超前 → 增大 delay 等待；严重落后 → 丢帧
 
-### GL_UNPACK_ALIGNMENT
-- `initializeGL` 开头 `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)` 一次设置
-- `paintGL` / `resizeGL` 无需重复设置（context 级别全局状态）
+### Serial 机制
+- StreamLifecycleManager 持有 `std::atomic<int> m_pktSerial`
+- `open()` / `reconnect()` → `incrementSerial()`
+- DemuxThread 每包 stamp serial，decode 线程/渲染检查匹配
+- `shutdownPipeline()` → `m_pktSerial++`，所有旧数据自动失效
+- 确保 RTSP reconnect 后不会显示上一连接的残留帧
 
-### AVClock 首帧保护
-- `isReady()` 标志，`setVideoClock` 第一次调用后置 true
-- `RenderScheduler::shouldDrop` 在 `!isReady()` 时直接返回 false
+### IRenderer 接口预留
+- Phase 1: SDLRenderer（SDL_UpdateYUVTexture CPU upload）
+- 未来: D3D11Renderer（GPU direct YUV upload）
+- 接口抽象隔离渲染后端，切换不影响上层逻辑
 
 ### 秒开策略
 - `avformat_open_input` 设置低 `probesize` / `analyzeduration` (~32KB)
-- PacketQueue 容量仅 200ms，不强缓冲
-- 首帧到达立即 invokeMethod 调度渲染
+- PacketQueue 容量仅 200ms (video) / 80ms (audio)，不强缓冲
+- 首帧立即渲染
 
 ---
 
@@ -430,25 +504,40 @@ struct ClockPoint {
 ```
 RTSP-Player/
 ├── CMakeLists.txt
+├── 3rd/
+│   ├── SDL2/
+│   │   ├── include/          # SDL2 头文件
+│   │   └── lib/x86/          # SDL2.lib + SDL2.dll
+│   └── FFmpeg/
+│       ├── bin/              # avcodec-58.dll 等 (x86)
+│       ├── include/          # FFmpeg 头文件
+│       └── lib/              # avcodec.lib 等 (x86)
 ├── src/
-│   ├── main.cpp
+│   ├── main.cpp              # SDL 窗口 + 主循环
 │   ├── RTSPlayer.h / .cpp
-│   ├── PlayerStateMachine.h / .cpp
 │   ├── StreamLifecycleManager.h / .cpp
+│   ├── PlayerStateMachine.h / .cpp
 │   ├── DemuxThread.h / .cpp
 │   ├── VideoDecodeThread.h / .cpp
-│   ├── RenderScheduler.h / .cpp
-│   ├── AudioThread.h / .cpp
+│   ├── AudioWorker.h / .cpp
+│   ├── SDLRenderer.h / .cpp       # v2 新增
+│   ├── SDLAudio.h / .cpp          # v2 新增
+│   ├── AudioRingBuffer.h / .cpp   # v2 新增
 │   ├── PacketQueue.h / .cpp
 │   ├── VideoFrameQueue.h / .cpp
 │   ├── AVClock.h / .cpp
-│   ├── GLVideoWidget.h / .cpp
 │   ├── PlayerStats.h / .cpp
-│   └── Common.h
-├── resources/
-│   └── shaders/
-│       ├── yuv420p.vert
-│       └── yuv420p.frag
+│   ├── Common.h
+│   └── logger/
+│       ├── Logger.h
+│       └── Logger.cpp
+└── docs/
+    └── superpowers/
+        ├── specs/
+        │   └── 2026-06-08-rtsp-player-design.md
+        └── plans/
+            ├── 2026-06-08-rtsp-player-phase1.md
+            └── 2026-06-10-sdl2-migration-plan.md
 ```
 
 ---
@@ -457,8 +546,11 @@ RTSP-Player/
 
 | Phase | 内容 | 模块 | 验收标准 |
 |-------|------|------|----------|
-| **1** | Video 秒开链路 | RTSPlayer, StateMachine, DemuxThread, VideoDecodeThread, RenderScheduler, PacketQueue, VideoFrameQueue, AVClock(基础), GLVideoWidget, PlayerStats, CMakeLists.txt | RTSP→OpenGL 稳定播放、秒开、不花屏、无泄漏 |
-| **2** | Frame Drop | RenderScheduler::shouldDrop() + AVClock::isReady() | late>30ms 帧被丢弃，延迟不累积 |
-| **3** | Reconnect | StreamLifecycleManager 完整 | 断线自动重连，Flush 后恢复播放 |
-| **4** | Audio | AudioThread, QAudioOutput, AVClock::setAudioClock | 解码播放不崩溃，集成 audioClock（不验证同步） |
-| **5** | AV Sync | AVClock::drift(), AVClock::masterClock(), audio resample | 音视频同步（VideoClock Master） |
+| **1** | Video 秒开链路 | RTSPlayer, StateMachine, DemuxThread, VideoDecodeThread, PacketQueue, VideoFrameQueue, AVClock(基础), SDLRenderer, PlayerStats | RTSP→SDL 窗口稳定播放、秒开、不花屏、无泄漏 |
+| **2** | Frame Drop + A/V Sync 基础 | videoRefresh() drop 逻辑 + AVClock::isReady() + drift() | late>30ms 帧被丢弃，延迟不累积；音视频基本同步 |
+| **3** | Reconnect + Serial | StreamLifecycleManager 完整 + serial 机制 | 断线自动重连，Flush 后恢复播放，旧帧自动失效 |
+| **4** | Audio 链路 | AudioWorker, AudioRingBuffer, SDLAudio, AVClock::setAudioClock | 解码播放不崩溃不爆音，SDL 回调精确设时钟 |
+| **5** | A/V Sync 精细调优 | AVClock::drift() 策略 + 丢帧阈值调参 + 音频 underrun 处理 | 长期播放 A/V 偏差 < 30ms |
+| **6** | 生产化打磨 | Stats CSV、窗口 resize/fullscreen、退出清理、内存泄漏检查 | 30 分钟连续播放无内存增长、无崩溃 |
+
+> Phase 1-6 全部基于 SDL2 + std::thread 实现，无 Qt 依赖。

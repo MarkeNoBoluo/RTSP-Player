@@ -8,10 +8,8 @@ extern "C" {
 }
 
 DemuxThread::DemuxThread(PlayerStateMachine* sm, PlayerStats* stats,
-                         PacketQueue* videoQueue, PacketQueue* audioQueue,
-                         QObject* parent)
-    : QThread(parent)
-    , m_stateMachine(sm)
+                         PacketQueue* videoQueue, PacketQueue* audioQueue)
+    : m_stateMachine(sm)
     , m_stats(stats)
     , m_videoQueue(videoQueue)
     , m_audioQueue(audioQueue)
@@ -20,7 +18,7 @@ DemuxThread::DemuxThread(PlayerStateMachine* sm, PlayerStats* stats,
 
 DemuxThread::~DemuxThread() {
     stop();
-    wait();
+    join();
 }
 
 void DemuxThread::prepareForOpen() {
@@ -38,8 +36,19 @@ void DemuxThread::setContext(AVFormatContext* fmtCtx, AVStream* videoStream, AVS
     }
 }
 
+void DemuxThread::start() {
+    m_abort = false;
+    m_thread = std::thread(&DemuxThread::run, this);
+}
+
 void DemuxThread::stop() {
     m_abort = true;
+}
+
+void DemuxThread::join() {
+    if (m_thread.joinable()) {
+        m_thread.join();
+    }
 }
 
 void DemuxThread::run() {
@@ -54,6 +63,7 @@ void DemuxThread::run() {
 
     m_stateMachine->transition(PlayerState::Connecting, PlayerState::Playing);
 
+    int serial = m_serial.load(std::memory_order_acquire);
     AVPacket* pkt = av_packet_alloc();
 
     while (!m_abort) {
@@ -69,21 +79,21 @@ void DemuxThread::run() {
             char errbuf[256] = {0};
             av_strerror(ret, errbuf, sizeof(errbuf));
             LOG_ERROR("av_read_frame error: %s (code=%d)", errbuf, ret);
-            emit streamError();
+            if (m_onStreamError) m_onStreamError();
             break;
         }
 
+        int curSerial = m_serial.load(std::memory_order_acquire);
         if (pkt->stream_index == m_videoStream->index) {
-            m_videoQueue->push(pkt);
+            m_videoQueue->push(pkt, curSerial);
         } else if (m_audioStream && pkt->stream_index == m_audioStream->index) {
-            m_audioQueue->push(pkt);
+            m_audioQueue->push(pkt, curSerial);
         }
 
         av_packet_unref(pkt);
     }
 
     LOG_INFO("Demux thread exiting");
-
     av_packet_free(&pkt);
 }
 

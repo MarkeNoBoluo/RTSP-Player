@@ -16,7 +16,7 @@ void PacketQueue::init(AVRational timeBase, int capacityMs) {
     LOG_DEBUG("PacketQueue initialized: capacity=%dms, timeBase=%f", capacityMs, m_timeBaseUs);
 }
 
-bool PacketQueue::push(AVPacket* pkt) {
+bool PacketQueue::push(AVPacket* pkt, int serial) {
     std::unique_lock<std::mutex> lock(m_mutex);
 
     int64_t durUs = 0;
@@ -50,7 +50,7 @@ bool PacketQueue::push(AVPacket* pkt) {
     AVPacket* copy = av_packet_alloc();
     av_packet_move_ref(copy, pkt);
 
-    m_queue.push_back({copy, durUs});
+    m_queue.push_back({copy, durUs, serial});
     m_totalDurationUs += durUs;
     m_cond.notify_one();
     return true;

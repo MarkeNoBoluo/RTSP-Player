@@ -11,6 +11,7 @@ public:
 
     void       setAudioClock(double pts);
     ClockPoint audioClock() const;
+    bool       hasAudio() const;
 
     double     drift() const;
     void       reset();

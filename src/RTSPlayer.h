@@ -1,32 +1,38 @@
 #pragma once
 
 #include "Common.h"
-#include <QObject>
+#include <functional>
 
 class PlayerStateMachine;
 class PacketQueue;
 class VideoFrameQueue;
 class AVClock;
-class GLVideoWidget;
 class PlayerStats;
 class StreamLifecycleManager;
+class IRenderer;
 
-class RTSPlayer : public QObject {
-    Q_OBJECT
+class RTSPlayer {
 public:
-    explicit RTSPlayer(QObject* parent = nullptr);
-    ~RTSPlayer() override;
+    using StateCallback = std::function<void(PlayerState)>;
+    using ErrorCallback = std::function<void(const char*)>;
+
+    RTSPlayer();
+    ~RTSPlayer();
 
     bool open(const char* url);
     void close();
 
-    GLVideoWidget* videoWidget() const { return m_glWidget; }
-    PlayerStats*   stats() const       { return m_stats; }
-    PlayerState    state() const;
+    void         setRenderer(IRenderer* renderer);
+    IRenderer*   renderer() const;
+    PlayerStats* stats()    const;
+    PlayerState  state()    const;
 
-signals:
-    void stateChanged(PlayerState state);
-    void errorOccurred(const QString& message);
+    void setStateCallback(StateCallback cb);
+    void setErrorCallback(ErrorCallback cb);
+
+    void videoRefresh();
+
+    int pktSerial() const;
 
 private:
     PlayerStateMachine*     m_stateMachine;
@@ -34,7 +40,11 @@ private:
     PacketQueue*            m_audioQueue;
     VideoFrameQueue*        m_frameQueue;
     AVClock*                m_clock;
-    GLVideoWidget*          m_glWidget;
     PlayerStats*            m_stats;
+    IRenderer*              m_renderer = nullptr;
     StreamLifecycleManager* m_lifecycle;
+
+    int64_t m_consecutiveDrops = 0;
+    int64_t m_lastRenderUs    = 0;
+    bool    m_inVideoRefresh   = false;   // reentrancy guard
 };

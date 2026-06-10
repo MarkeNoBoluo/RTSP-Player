@@ -1,12 +1,12 @@
 #pragma once
 
-#include <QObject>
 #include <atomic>
 #include <cstdio>
+#include <thread>
 
 class PacketQueue;
 class AVClock;
-class AudioPullDevice;
+class AudioRingBuffer;
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,19 +18,21 @@ extern "C" {
 }
 #endif
 
-class AudioWorker : public QObject {
-    Q_OBJECT
+class AudioWorker {
 public:
     AudioWorker(AVCodecContext* codecCtx, AVRational timeBase,
                 PacketQueue* queue, AVClock* clock,
-                AudioPullDevice* device, QObject* parent = nullptr);
-    ~AudioWorker() override;
+                AudioRingBuffer* ringBuffer);
+    ~AudioWorker();
 
-public slots:
+    void setSerial(int serial) { m_serial.store(serial, std::memory_order_release); }
+
     void start();
     void stop();
+    void join();
 
 private:
+    void run();
     void writeWavHeader();
     void updateWavHeader();
 
@@ -38,11 +40,18 @@ private:
     AVRational         m_timeBase;
     PacketQueue*       m_queue;
     AVClock*           m_clock;
-    AudioPullDevice*   m_device;
+    AudioRingBuffer*   m_ringBuffer;
 
     SwrContext*        m_swrCtx   = nullptr;
     FILE*              m_wavFile  = nullptr;
     int                m_dataSize = 0;
 
     std::atomic<bool>  m_running{false};
+    std::atomic<int>   m_serial{0};
+    std::thread        m_thread;
+
+    static constexpr int kTargetRate     = 48000;
+    static constexpr int kTargetChannels = 2;
+    static constexpr int kTargetFormat   = AV_SAMPLE_FMT_S16;
+    static constexpr const char* kWavPath = "audio_output.wav";
 };

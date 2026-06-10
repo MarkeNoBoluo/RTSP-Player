@@ -32,3 +32,9 @@ struct ClockPoint {
     double  pts;
     int64_t systemTime;
 };
+
+// SDL_USEREVENT codes — pushed by SDL_AddTimer callbacks, consumed by main loop
+enum UserEventCode : int {
+    EVENT_RECONNECT = 1,
+    EVENT_STATS     = 2,
+};

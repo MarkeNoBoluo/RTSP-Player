@@ -3,19 +3,16 @@
 #include "PacketQueue.h"
 #include "VideoFrameQueue.h"
 #include "AVClock.h"
-#include "GLVideoWidget.h"
 #include "PlayerStats.h"
 #include "DemuxThread.h"
 #include "VideoDecodeThread.h"
-#include "RenderScheduler.h"
 #include "AudioWorker.h"
-#include "AudioPullDevice.h"
+#include "AudioRingBuffer.h"
+#include "SDLAudio.h"
 #include "logger/Logger.h"
 
-#include <QAudioOutput>
-#include <QAudioFormat>
-#include <QAudioDeviceInfo>
-#include <QAudio>
+#include <algorithm>
+#include <SDL.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -25,23 +22,16 @@ extern "C" {
 StreamLifecycleManager::StreamLifecycleManager(
     PlayerStateMachine* sm, PlayerStats* stats,
     PacketQueue* videoQ, PacketQueue* audioQ,
-    VideoFrameQueue* frameQ, AVClock* clock,
-    GLVideoWidget* widget, QObject* parent)
-    : QObject(parent)
-    , m_stateMachine(sm)
+    VideoFrameQueue* frameQ, AVClock* clock)
+    : m_stateMachine(sm)
     , m_stats(stats)
     , m_videoQueue(videoQ)
     , m_audioQueue(audioQ)
     , m_frameQueue(frameQ)
     , m_clock(clock)
-    , m_glWidget(widget)
+    ,m_audioEnabled(false) // 默认禁用音频解码
 {
-    m_reconnectTimer = new QTimer(this);
-    m_reconnectTimer->setSingleShot(true);
-    connect(m_reconnectTimer, &QTimer::timeout, this, &StreamLifecycleManager::doReconnect);
-
     m_stats->initCsv("stats.csv");
-    m_glWidget->setStats(m_stats);
 }
 
 StreamLifecycleManager::~StreamLifecycleManager() {
@@ -68,12 +58,11 @@ bool StreamLifecycleManager::open(const char* url) {
     m_generation++;
     m_url = url;
     m_backoffCount = 0;
-    m_reconnectDelayMs = 1000;
 
     if (!initDemux(url)) {
         m_stateMachine->forceState(PlayerState::Error);
-        emit stateChanged(PlayerState::Error);
-        emit errorOccurred(QStringLiteral("Failed to open RTSP stream"));
+        if (m_onState) m_onState(PlayerState::Error);
+        if (m_onError) m_onError("Failed to open RTSP stream");
         return false;
     }
 
@@ -81,8 +70,8 @@ bool StreamLifecycleManager::open(const char* url) {
         avformat_close_input(&m_fmtCtx);
         m_fmtCtx = nullptr;
         m_stateMachine->forceState(PlayerState::Error);
-        emit stateChanged(PlayerState::Error);
-        emit errorOccurred(QStringLiteral("Failed to open decoder"));
+        if (m_onState) m_onState(PlayerState::Error);
+        if (m_onError) m_onError("Failed to open decoder");
         return false;
     }
 
@@ -94,28 +83,19 @@ void StreamLifecycleManager::close() {
     if (m_stateMachine->state() == PlayerState::Stopped) return;
 
     m_generation++;
-    m_reconnectTimer->stop();
 
     m_stateMachine->transition(m_stateMachine->state(), PlayerState::Closing);
-    emit stateChanged(PlayerState::Closing);
+    if (m_onState) m_onState(PlayerState::Closing);
 
     shutdownPipeline();
     m_stateMachine->forceState(PlayerState::Stopped);
-    emit stateChanged(PlayerState::Stopped);
+    if (m_onState) m_onState(PlayerState::Stopped);
 }
 
-void StreamLifecycleManager::onStreamError() {
-    if (!m_stateMachine->transition(PlayerState::Playing, PlayerState::Recovering)) {
-        return;
-    }
-    emit stateChanged(PlayerState::Recovering);
-
-    m_stats->reconnectStartUs.store(av_gettime_relative());
-
-    LOG_INFO("Stream error detected, shutting down for reconnect");
-
-    shutdownPipeline();
-    scheduleReconnect();
+int StreamLifecycleManager::calcBackoffMs() {
+    int delay = 1000 << std::min(m_backoffCount, 3);
+    m_backoffCount++;
+    return delay;
 }
 
 bool StreamLifecycleManager::initDemux(const char* url) {
@@ -123,8 +103,18 @@ bool StreamLifecycleManager::initDemux(const char* url) {
 
     delete m_demuxThread;
     m_demuxThread = new DemuxThread(m_stateMachine, m_stats,
-                                     m_videoQueue, m_audioQueue, this);
+                                    m_videoQueue, m_audioQueue);
     m_demuxThread->prepareForOpen();
+    m_demuxThread->setStreamErrorCallback([this]() {
+        if (!m_stateMachine->transition(PlayerState::Playing, PlayerState::Recovering)) {
+            return;
+        }
+        if (m_onState) m_onState(PlayerState::Recovering);
+        m_stats->reconnectStartUs.store(av_gettime_relative());
+        LOG_INFO("Stream error detected, shutting down for reconnect");
+        shutdownPipeline();
+        scheduleReconnect();
+    });
 
     m_fmtCtx = avformat_alloc_context();
     if (!m_fmtCtx) {
@@ -146,7 +136,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     if (ret < 0) {
         char errbuf[256] = {0};
         av_strerror(ret, errbuf, sizeof(errbuf));
-        LOG_ERROR("avformat_open_input failed: %s (code=%d)", errbuf, ret);
+        LOG_ERROR("avformat_open_input failed: %s", errbuf);
         avformat_close_input(&m_fmtCtx);
         m_fmtCtx = nullptr;
         return false;
@@ -159,7 +149,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     if (ret < 0) {
         char errbuf[256] = {0};
         av_strerror(ret, errbuf, sizeof(errbuf));
-        LOG_ERROR("avformat_find_stream_info failed: %s (code=%d)", errbuf, ret);
+        LOG_ERROR("avformat_find_stream_info failed: %s", errbuf);
         avformat_close_input(&m_fmtCtx);
         m_fmtCtx = nullptr;
         return false;
@@ -178,7 +168,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
                  m_videoCodecPar->width, m_videoCodecPar->height);
     }
 
-    if (audioIdx >= 0) {
+    if (audioIdx >= 0 && m_audioEnabled) {
         m_audioStream   = m_fmtCtx->streams[audioIdx];
         m_audioCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_audioCodecPar, m_audioStream->codecpar);
@@ -196,19 +186,16 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     }
 
     m_demuxThread->setContext(m_fmtCtx, m_videoStream, m_audioStream);
-    connect(m_demuxThread, &DemuxThread::streamError,
-            this, &StreamLifecycleManager::onStreamError);
 
     LOG_INFO("Demux initialization complete");
     return true;
 }
 
 bool StreamLifecycleManager::initDecoders() {
-    // Video decoder
     if (m_videoCodecPar) {
         const AVCodec* codec = avcodec_find_decoder(m_videoCodecPar->codec_id);
         if (!codec) {
-            LOG_ERROR("Video decoder not found for codec_id=%d", m_videoCodecPar->codec_id);
+            LOG_ERROR("Video decoder not found");
             return false;
         }
         m_videoCodecCtx = avcodec_alloc_context3(codec);
@@ -219,11 +206,10 @@ bool StreamLifecycleManager::initDecoders() {
         LOG_INFO("Video decoder opened: %dx%d", m_videoCodecCtx->width, m_videoCodecCtx->height);
     }
 
-    // Audio decoder
-    if (m_audioCodecPar) {
+    if (m_audioCodecPar && m_audioEnabled) {
         const AVCodec* codec = avcodec_find_decoder(m_audioCodecPar->codec_id);
         if (!codec) {
-            LOG_ERROR("Audio decoder not found for codec_id=%d", m_audioCodecPar->codec_id);
+            LOG_ERROR("Audio decoder not found");
             return false;
         }
         m_audioCodecCtx = avcodec_alloc_context3(codec);
@@ -240,154 +226,104 @@ bool StreamLifecycleManager::initDecoders() {
 
 void StreamLifecycleManager::startThreads() {
     delete m_decodeThread;
-    delete m_renderScheduler;
+    m_decodeThread = nullptr;
 
     AVRational videoTimeBase = m_videoStream ? m_videoStream->time_base : AVRational{1, 90000};
 
     if (m_videoCodecCtx) {
         m_decodeThread = new VideoDecodeThread(m_videoCodecCtx, videoTimeBase,
-                                                m_videoQueue, m_frameQueue, m_stats, this);
+                                                m_videoQueue, m_frameQueue, m_stats);
     }
 
-    m_renderScheduler = new RenderScheduler(m_frameQueue, m_clock, m_glWidget, m_stats, this);
-
-    if (m_videoStream && m_videoStream->avg_frame_rate.num > 0 && m_videoStream->avg_frame_rate.den > 0) {
-        double fps = av_q2d(m_videoStream->avg_frame_rate);
-        m_renderScheduler->setFrameDuration((1.0 / fps) * 1000000.0);
-    } else {
-        m_renderScheduler->setFrameDuration(33333.0);
-    }
-
-    // Audio output on GUI thread (WASAPI requires message pump)
-    if (m_audioCodecCtx) {
+    // Audio pipeline
+    if (m_audioCodecCtx && m_audioEnabled) {
         delete m_audioWorker;
-        delete m_audioThread;
-        delete m_audioOutput;
-        delete m_audioPullDevice;
+        m_audioWorker = nullptr;
+        delete m_audioRingBuffer;
+        m_audioRingBuffer = nullptr;
+        delete m_sdlAudio;
+        m_sdlAudio = nullptr;
 
         AVRational audioTimeBase = m_audioStream ? m_audioStream->time_base : AVRational{1, 90000};
 
-        m_audioPullDevice = new AudioPullDevice(200, this);
-        m_audioPullDevice->open(QIODevice::ReadWrite);
-        m_audioPullDevice->setStats(m_stats);
+        m_audioRingBuffer = new AudioRingBuffer(100);
+        m_audioRingBuffer->setStats(m_stats);
 
-        QAudioFormat format;
-        format.setSampleRate(48000);
-        format.setChannelCount(2);
-        format.setSampleSize(16);
-        format.setCodec("audio/pcm");
-        format.setByteOrder(QAudioFormat::LittleEndian);
-        format.setSampleType(QAudioFormat::SignedInt);
-
-        QAudioDeviceInfo info = QAudioDeviceInfo::defaultOutputDevice();
-        if (info.deviceName().isEmpty() || info.deviceName() == "null") {
-            // default device may be null even when devices exist — enumerate all
-            QList<QAudioDeviceInfo> devices = QAudioDeviceInfo::availableDevices(QAudio::AudioOutput);
-            for (const auto& dev : devices) {
-                if (!dev.deviceName().isEmpty() && dev.deviceName() != "null") {
-                    info = dev;
-                    LOG_INFO("Audio device found: %s", dev.deviceName().toUtf8().constData());
-                    break;
-                }
-            }
-        }
-        if (info.deviceName().isEmpty() || info.deviceName() == "null") {
-            LOG_WARN("No audio output device, audio disabled");
-            delete m_audioPullDevice;
-            m_audioPullDevice = nullptr;
+        m_sdlAudio = new SDLAudio(m_audioRingBuffer, m_clock, m_stats);
+        if (!m_sdlAudio->init(48000, 2)) {
+            LOG_WARN("SDL audio init failed, audio disabled");
+            delete m_sdlAudio;
+            m_sdlAudio = nullptr;
+            delete m_audioRingBuffer;
+            m_audioRingBuffer = nullptr;
         } else {
-            format = info.nearestFormat(format);
-            if (format.sampleRate() <= 0) {
-                LOG_WARN("Audio format invalid, audio disabled");
-                delete m_audioPullDevice;
-                m_audioPullDevice = nullptr;
-            } else {
-                m_audioOutput = new QAudioOutput(info, format, this);
-                m_audioOutput->setBufferSize(4096);
-                m_audioOutput->start(m_audioPullDevice);
-                LOG_INFO("Audio output: %s %dHz/%dch/s%d",
-                         info.deviceName().toUtf8().constData(),
-                         format.sampleRate(), format.channelCount(), format.sampleSize());
-            }
+            m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
+                                             m_audioQueue, m_clock,
+                                             m_audioRingBuffer);
+            LOG_INFO("Audio pipeline: SDLAudio + AudioRingBuffer(100ms)");
         }
-
-    // Audio worker (always create if codec exists; WAV file diagnostic)
-    if (m_audioCodecCtx) {
-        m_audioThread = new QThread(this);
-        m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
-                                         m_audioQueue, m_clock,
-                                         m_audioPullDevice);
-        m_audioWorker->moveToThread(m_audioThread);
-
-        connect(m_audioThread, &QThread::started, m_audioWorker, &AudioWorker::start);
-        connect(m_audioWorker, &AudioWorker::destroyed, m_audioThread, &QThread::quit);
-        connect(m_audioThread, &QThread::finished, m_audioThread, &QObject::deleteLater);
-    }
     }
 
+    // Set initial serial
+    incrementSerial();
+
+    // Start all threads
     m_demuxThread->start();
     if (m_decodeThread) m_decodeThread->start();
-    m_renderScheduler->start();
-    if (m_audioThread) m_audioThread->start();
+    if (m_audioWorker && m_audioEnabled) m_audioWorker->start();
+    if (m_sdlAudio && m_audioEnabled) m_sdlAudio->start();
+
+    LOG_INFO("All threads started");
 }
 
 void StreamLifecycleManager::shutdownPipeline() {
     LOG_INFO("Shutting down pipeline");
 
-    m_reconnectTimer->stop();
+    if (m_reconnectTimerId) {
+        SDL_RemoveTimer(m_reconnectTimerId);
+        m_reconnectTimerId = 0;
+    }
 
     m_videoQueue->abort();
     m_audioQueue->abort();
-    m_frameQueue->notifyAll();
 
-    // Stop audio thread first (uses audio queue)
-    if (m_audioWorker) {
-        m_audioWorker->stop();
+    if (m_sdlAudio && m_audioEnabled) {
+        m_sdlAudio->stop();
     }
-    if (m_audioThread && m_audioThread->isRunning()) {
-        if (!m_audioThread->wait(3000)) {
-            LOG_ERROR("AudioThread wait timeout — abandoned");
-        }
+
+    if (m_audioWorker && m_audioEnabled) {
+        m_audioWorker->stop();
+        m_audioWorker->join();
     }
 
     if (m_demuxThread) {
         m_demuxThread->stop();
-        if (m_demuxThread->isRunning()) {
-            if (!m_demuxThread->wait(3000)) {
-                LOG_ERROR("DemuxThread wait timeout — abandoned");
-            }
-        }
+        m_demuxThread->join();
     }
     if (m_decodeThread) {
         m_decodeThread->stop();
-        if (m_decodeThread->isRunning()) {
-            if (!m_decodeThread->wait(3000)) {
-                LOG_ERROR("VideoDecodeThread wait timeout — abandoned");
-            }
-        }
+        m_decodeThread->join();
     }
-    if (m_renderScheduler) {
-        m_renderScheduler->stop();
-        if (m_renderScheduler->isRunning()) {
-            if (!m_renderScheduler->wait(3000)) {
-                LOG_ERROR("RenderScheduler wait timeout — abandoned");
-            }
-        }
+
+    if (m_sdlAudio && m_audioEnabled) {
+        m_sdlAudio->close();
     }
 
     delete m_demuxThread;
     delete m_decodeThread;
-    delete m_renderScheduler;
-    delete m_audioWorker;
-    delete m_audioOutput;
-    delete m_audioPullDevice;
+    
+
     m_demuxThread     = nullptr;
     m_decodeThread    = nullptr;
-    m_renderScheduler = nullptr;
-    m_audioWorker     = nullptr;
-    m_audioThread     = nullptr;
-    m_audioOutput     = nullptr;
-    m_audioPullDevice = nullptr;
+
+    if(m_audioEnabled){
+        delete m_audioWorker;
+        delete m_sdlAudio;
+        delete m_audioRingBuffer;
+        m_audioWorker     = nullptr;
+        m_sdlAudio        = nullptr;
+        m_audioRingBuffer = nullptr;
+    }
 
     if (m_videoCodecCtx) { avcodec_flush_buffers(m_videoCodecCtx); avcodec_free_context(&m_videoCodecCtx); }
     if (m_audioCodecCtx) { avcodec_flush_buffers(m_audioCodecCtx); avcodec_free_context(&m_audioCodecCtx); }
@@ -415,43 +351,49 @@ void StreamLifecycleManager::shutdownPipeline() {
     LOG_INFO("Pipeline shutdown complete");
 }
 
+static Uint32 onReconnectTimer(Uint32 interval, void* param) {
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = SDL_USEREVENT;
+    event.user.code = EVENT_RECONNECT;
+    event.user.data1 = param;
+    SDL_PushEvent(&event);
+    return 0; // non-repeating
+}
+
 void StreamLifecycleManager::scheduleReconnect() {
     m_stateMachine->transition(PlayerState::Recovering, PlayerState::Reconnecting);
-    emit stateChanged(PlayerState::Reconnecting);
+    if (m_onState) m_onState(PlayerState::Reconnecting);
 
-    LOG_INFO("Reconnecting in %d ms (attempt #%d)", m_reconnectDelayMs, m_backoffCount + 1);
-    m_reconnectTimer->start(m_reconnectDelayMs);
+    int delay = calcBackoffMs();
+    LOG_INFO("Reconnecting in %d ms (attempt #%d)", delay, m_backoffCount);
+
+    m_reconnectTimerId = SDL_AddTimer(delay, onReconnectTimer, this);
 }
 
 void StreamLifecycleManager::doReconnect() {
+    m_reconnectTimerId = 0;
+
     if (!m_stateMachine->transition(PlayerState::Reconnecting, PlayerState::Connecting)) {
         LOG_INFO("Reconnect skipped: not in Reconnecting state");
         return;
     }
-    emit stateChanged(PlayerState::Connecting);
+    if (m_onState) m_onState(PlayerState::Connecting);
 
-    LOG_INFO("Attempting reconnect #%d to %s", m_backoffCount + 1, m_url.c_str());
+    LOG_INFO("Attempting reconnect #%d to %s", m_stats->reconnectCount.load() + 1, m_url.c_str());
 
     if (!initDemux(m_url.c_str())) {
-        m_backoffCount++;
-        m_reconnectDelayMs = m_reconnectDelayMs * 2;
-        if (m_reconnectDelayMs > 8000) m_reconnectDelayMs = 8000;
-        shutdownPipeline();
         scheduleReconnect();
         return;
     }
 
     if (!initDecoders()) {
-        m_backoffCount++;
-        m_reconnectDelayMs = m_reconnectDelayMs * 2;
-        if (m_reconnectDelayMs > 8000) m_reconnectDelayMs = 8000;
         shutdownPipeline();
         scheduleReconnect();
         return;
     }
 
     m_backoffCount = 0;
-    m_reconnectDelayMs = 1000;
 
     m_stats->reconnectCount++;
     int64_t reconnectUs = m_stats->reconnectStartUs.load();
@@ -463,4 +405,11 @@ void StreamLifecycleManager::doReconnect() {
 
     startThreads();
     LOG_INFO("Reconnect successful");
+}
+
+void StreamLifecycleManager::incrementSerial() {
+    int s = m_pktSerial.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (m_demuxThread) m_demuxThread->setSerial(s);
+    if (m_decodeThread) m_decodeThread->setSerial(s);
+    if (m_audioWorker && m_audioEnabled) m_audioWorker->setSerial(s);
 }

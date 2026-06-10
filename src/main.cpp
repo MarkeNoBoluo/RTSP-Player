@@ -1,15 +1,11 @@
-#include <QApplication>
-#include <QMainWindow>
-#include <QVBoxLayout>
-#include <QLabel>
-#include <QTimer>
-#include <QDebug>
+#define SDL_MAIN_HANDLED
+#include <SDL.h>
 
 #include "RTSPlayer.h"
-#include "GLVideoWidget.h"
+#include "SDLRenderer.h"
 #include "PlayerStats.h"
-#include "Common.h"
 #include "AVClock.h"
+#include "StreamLifecycleManager.h"
 #include "logger/Logger.h"
 
 extern "C" {
@@ -24,112 +20,93 @@ static void ffmpegLogCallback(void*, int level, const char* fmt, va_list vl) {
     logger::Logger::instance().log(logger::Level::Debug, "ffmpeg", 0, "%s", buf);
 }
 
-static void dumpProtocols() {
-    void* opaque = nullptr;
-    const char* name;
-    LOG_INFO("Supported FFmpeg input protocols:");
-    while ((name = avio_enum_protocols(&opaque, 0)) != nullptr) {
-        LOG_INFO("  %s", name);
-    }
+static Uint32 onStatsTimer(Uint32 interval, void* param) {
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = SDL_USEREVENT;
+    event.user.code = EVENT_STATS;
+    event.user.data1 = param;
+    SDL_PushEvent(&event);
+    return interval; // repeating timer
 }
 
 int main(int argc, char* argv[]) {
-    // Initialize log file first, before any LOG calls
     const char* logPath = "rtsp_player.log";
     if (argc > 2) logPath = argv[2];
     logger::Logger::instance().initLogFile(logPath);
     atexit([]() { logger::Logger::instance().closeLogFile(); });
 
-    LOG_INFO("===== RTSP Player starting =====");
+    LOG_INFO("RTSP Player v2 (SDL2) start");
 
-    // Register FFmpeg log callback to see internal FFmpeg messages
     av_log_set_level(AV_LOG_DEBUG);
     av_log_set_callback(ffmpegLogCallback);
-    LOG_INFO("FFmpeg log callback registered");
-    LOG_INFO("FFmpeg version: %s", av_version_info());
-    dumpProtocols();
 
-    LOG_INFO("Creating QApplication...");
-    QApplication app(argc, argv);
-    LOG_INFO("QApplication created");
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) < 0) {
+        LOG_ERROR("SDL_Init failed: %s", SDL_GetError());
+        return 1;
+    }
 
-    QMainWindow window;
-    window.setWindowTitle("RTSP Player - Phase 4.5");
+    SDLRenderer renderer("RTSP Player", 1280, 720);
 
-    auto* centralWidget = new QWidget(&window);
-    auto* layout = new QVBoxLayout(centralWidget);
-    layout->setContentsMargins(0, 0, 0, 0);
-
-    auto* statsLabel = new QLabel("Waiting...");
-    layout->addWidget(statsLabel);
-    LOG_INFO("UI layout created");
-
-    LOG_INFO("Creating RTSPlayer...");
     RTSPlayer player;
-    LOG_INFO("RTSPlayer created");
-
-    layout->addWidget(player.videoWidget(), 1);
-
-    QObject::connect(&player, &RTSPlayer::stateChanged, [&](PlayerState state) {
+    player.setRenderer(&renderer);
+    player.setStateCallback([](PlayerState state) {
         const char* names[] = {"Stopped","Connecting","Playing","Recovering","Reconnecting","Error","Closing"};
-        LOG_INFO("State changed: %s (%d)", names[(int)state], (int)state);
-        qDebug() << "State:" << static_cast<int>(state);
+        LOG_INFO("State: %s", names[(int)state]);
+    });
+    player.setErrorCallback([](const char* msg) {
+        LOG_ERROR("Error: %s", msg);
     });
 
-    QObject::connect(&player, &RTSPlayer::errorOccurred, [&](const QString& msg) {
-        LOG_ERROR("RTSPlayer error: %s", msg.toUtf8().constData());
-        qDebug() << "Error:" << msg;
-        statsLabel->setText("Error: " + msg);
-    });
-
-    auto* timer = new QTimer(&window);
-    QObject::connect(timer, &QTimer::timeout, [&]() {
-        auto* stats = player.stats();
-        int64_t latMs = stats->lastLatenessUs.load() / 1000;
-        int64_t latMaxMs = stats->maxLatenessUs.load() / 1000;
-        int64_t burst = stats->renderSkipBurst.load();
-        int underrun = stats->audioUnderruns.load();
-        int overrun = stats->audioOverruns.load();
-        statsLabel->setText(QString(
-            "Dec:%1 | Ren:%2 | Drop:%3 | Lat:%4ms(max%5) | Burst:%6 | Au:%7/%8")
-            .arg(stats->framesDecoded.load())
-            .arg(stats->framesRendered.load())
-            .arg(stats->framesDropped.load())
-            .arg(latMs).arg(latMaxMs).arg(burst)
-            .arg(underrun).arg(overrun));
-    });
-    timer->start(1000);
-
-    auto* csvTimer = new QTimer(&window);
-    QObject::connect(csvTimer, &QTimer::timeout, [&]() {
-        player.stats()->writeCsvRow();
-    });
-    csvTimer->start(5000);
-
-    auto* renderTimer = new QTimer(&window);
-    QObject::connect(renderTimer, &QTimer::timeout, [&]() {
-        if (player.state() == PlayerState::Playing) {
-            player.videoWidget()->update();
-        }
-    });
-    renderTimer->start(16);
-
-    window.setCentralWidget(centralWidget);
-    window.resize(1280, 720);
-    LOG_INFO("Showing window...");
-    window.show();
-    LOG_INFO("Window shown, entering event loop");
-
-    const char* url = "rtsp://192.168.42.116:25544/2026_06_08";
+    const char* url = "rtsp://192.168.42.116:25544/2026_06_10";
     if (argc > 1) url = argv[1];
 
-    LOG_INFO("Opening stream: %s", url);
-    bool ok = player.open(url);
-    LOG_INFO("player.open() returned: %s", ok ? "true" : "false");
-    LOG_INFO("Current state: %d", (int)player.state());
+    LOG_INFO("Open: %s", url);
+    player.open(url);
 
-    LOG_INFO("Entering Qt event loop...");
-    int ret = app.exec();
-    LOG_INFO("Qt event loop exited with code: %d", ret);
-    return ret;
+    // Stats CSV timer: writes every 5 seconds via SDL_USEREVENT
+    SDL_AddTimer(5000, onStatsTimer, player.stats());
+
+    bool running = true;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+            case SDL_QUIT:
+                running = false;
+                break;
+            case SDL_KEYDOWN:
+                if (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q)
+                    running = false;
+                else if (event.key.keysym.sym == SDLK_f) {
+                    Uint32 flags = SDL_GetWindowFlags(renderer.window());
+                    SDL_SetWindowFullscreen(renderer.window(),
+                        (flags & SDL_WINDOW_FULLSCREEN) ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                }
+                break;
+            case SDL_WINDOWEVENT:
+                if (event.window.event == SDL_WINDOWEVENT_RESIZED)
+                    renderer.setWindowSize(event.window.data1, event.window.data2);
+                break;
+            case SDL_USEREVENT:
+                switch (event.user.code) {
+                case EVENT_RECONNECT:
+                    static_cast<StreamLifecycleManager*>(event.user.data1)->doReconnect();
+                    break;
+                case EVENT_STATS:
+                    static_cast<PlayerStats*>(event.user.data1)->writeCsvRow();
+                    break;
+                }
+                break;
+            }
+        }
+
+        player.videoRefresh();
+
+        SDL_Delay(1);
+    }
+
+    player.close();
+    SDL_Quit();
+    return 0;
 }

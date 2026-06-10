@@ -28,6 +28,10 @@ void AVClock::setAudioClock(double pts) {
     m_audioSysTime.store(nowUs(), std::memory_order_release);
 }
 
+bool AVClock::hasAudio() const {
+    return m_audioSysTime.load(std::memory_order_acquire) > 0;
+}
+
 ClockPoint AVClock::audioClock() const {
     return { m_audioPts.load(std::memory_order_acquire),
              m_audioSysTime.load(std::memory_order_acquire) };

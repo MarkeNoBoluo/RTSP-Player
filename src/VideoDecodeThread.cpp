@@ -8,9 +8,8 @@ extern "C" {
 
 VideoDecodeThread::VideoDecodeThread(AVCodecContext* codecCtx, AVRational timeBase,
                                      PacketQueue* queue, VideoFrameQueue* frameQueue,
-                                     PlayerStats* stats, QObject* parent)
-    : QThread(parent)
-    , m_codecCtx(codecCtx)
+                                     PlayerStats* stats)
+    : m_codecCtx(codecCtx)
     , m_timeBase(timeBase.num > 0 ? timeBase : AVRational{1, 90000})
     , m_queue(queue)
     , m_frameQueue(frameQueue)
@@ -20,11 +19,21 @@ VideoDecodeThread::VideoDecodeThread(AVCodecContext* codecCtx, AVRational timeBa
 
 VideoDecodeThread::~VideoDecodeThread() {
     stop();
-    wait();
+    join();
+}
+
+void VideoDecodeThread::start() {
+    m_thread = std::thread(&VideoDecodeThread::run, this);
 }
 
 void VideoDecodeThread::stop() {
     m_abort = true;
+}
+
+void VideoDecodeThread::join() {
+    if (m_thread.joinable()) {
+        m_thread.join();
+    }
 }
 
 void VideoDecodeThread::run() {
@@ -36,12 +45,13 @@ void VideoDecodeThread::run() {
     AVFrame*  frame = av_frame_alloc();
 
     int timeoutCount = 0;
+    int curSerial = m_serial.load(std::memory_order_acquire);
 
     while (!m_abort) {
         if (!m_queue->pop(pkt, 100)) {
             timeoutCount++;
             if (timeoutCount <= 5) {
-                LOG_DEBUG("VideoDecode: pop timeout #%d, queue_size=%d", timeoutCount, m_queue->size());
+                LOG_DEBUG("VideoDecode: pop timeout #%d", timeoutCount);
             }
             if (timeoutCount == 30) {
                 LOG_INFO("VideoDecode: queue empty, flushing decoder");
@@ -55,7 +65,7 @@ void VideoDecodeThread::run() {
                     if (pts != AV_NOPTS_VALUE) {
                         pts = av_rescale_q(pts, m_timeBase, AVRational{1, AV_TIME_BASE});
                     }
-                    m_frameQueue->writeFrame(frame, pts);
+                    m_frameQueue->writeFrame(frame, pts, curSerial);
                     m_stats->framesDecoded++;
                 }
                 break;
@@ -69,6 +79,8 @@ void VideoDecodeThread::run() {
         av_packet_unref(pkt);
 
         if (ret < 0) continue;
+
+        curSerial = m_serial.load(std::memory_order_acquire);
 
         while (true) {
             ret = avcodec_receive_frame(m_codecCtx, frame);
@@ -88,7 +100,7 @@ void VideoDecodeThread::run() {
                          frame->width, frame->height, frame->format);
             }
 
-            m_frameQueue->writeFrame(frame, pts);
+            m_frameQueue->writeFrame(frame, pts, curSerial);
             m_stats->framesDecoded++;
         }
     }

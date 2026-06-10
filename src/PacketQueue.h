@@ -1,6 +1,6 @@
 #pragma once
 
-#include <queue>
+#include <deque>
 #include <mutex>
 #include <condition_variable>
 #include <cstdint>
@@ -21,7 +21,7 @@ public:
     ~PacketQueue();
 
     void init(AVRational timeBase, int capacityMs = 200);
-    bool push(AVPacket* pkt);
+    bool push(AVPacket* pkt, int serial = 0);
     bool pop(AVPacket* pkt, int timeoutMs);
     void flush();
     void abort();
@@ -30,8 +30,9 @@ public:
 
 private:
     struct PacketNode {
-        AVPacket* pkt;
-        int64_t   durationUs;
+        AVPacket* pkt = nullptr;
+        int64_t   durationUs = 0;
+        int       serial = 0;
     };
 
     bool    m_initialized = false;

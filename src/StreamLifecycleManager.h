@@ -1,10 +1,8 @@
 #pragma once
 
 #include "Common.h"
-#include <QObject>
-#include <QTimer>
-#include <QThread>
 #include <atomic>
+#include <functional>
 #include <string>
 
 #ifdef __cplusplus
@@ -19,37 +17,34 @@ class PlayerStateMachine;
 class PacketQueue;
 class VideoFrameQueue;
 class AVClock;
-class GLVideoWidget;
 class PlayerStats;
 class DemuxThread;
 class VideoDecodeThread;
-class RenderScheduler;
 class AudioWorker;
-class AudioPullDevice;
-class QAudioOutput;
+class AudioRingBuffer;
+class SDLAudio;
 
-class StreamLifecycleManager : public QObject {
-    Q_OBJECT
+class StreamLifecycleManager {
 public:
+    using StateCallback = std::function<void(PlayerState)>;
+    using ErrorCallback = std::function<void(const char*)>;
+
     StreamLifecycleManager(PlayerStateMachine* sm, PlayerStats* stats,
                            PacketQueue* videoQ, PacketQueue* audioQ,
-                           VideoFrameQueue* frameQ, AVClock* clock,
-                           GLVideoWidget* widget, QObject* parent = nullptr);
-    ~StreamLifecycleManager() override;
+                           VideoFrameQueue* frameQ, AVClock* clock);
+    ~StreamLifecycleManager();
+
+    void setStateCallback(StateCallback cb) { m_onState = std::move(cb); }
+    void setErrorCallback(ErrorCallback cb) { m_onError = std::move(cb); }
 
     bool open(const char* url);
     void close();
 
-    GLVideoWidget* videoWidget() const { return m_glWidget; }
-    PlayerStats*   stats() const       { return m_stats; }
-    PlayerState    state() const;
+    PlayerStats* stats()    const { return m_stats; }
+    PlayerState  state()    const;
 
-signals:
-    void stateChanged(PlayerState state);
-    void errorOccurred(const QString& message);
-
-private slots:
-    void onStreamError();
+    int  pktSerial() const { return m_pktSerial.load(std::memory_order_acquire); }
+    void doReconnect();
 
 private:
     bool initDemux(const char* url);
@@ -58,7 +53,9 @@ private:
 
     void shutdownPipeline();
     void scheduleReconnect();
-    void doReconnect();
+    int  calcBackoffMs();
+
+    void incrementSerial();
 
     PlayerStateMachine*  m_stateMachine;
     PlayerStats*         m_stats;
@@ -66,15 +63,12 @@ private:
     PacketQueue*         m_audioQueue;
     VideoFrameQueue*     m_frameQueue;
     AVClock*             m_clock;
-    GLVideoWidget*       m_glWidget;
 
     DemuxThread*         m_demuxThread     = nullptr;
     VideoDecodeThread*   m_decodeThread    = nullptr;
-    RenderScheduler*     m_renderScheduler = nullptr;
     AudioWorker*         m_audioWorker     = nullptr;
-    QThread*             m_audioThread     = nullptr;
-    AudioPullDevice*     m_audioPullDevice = nullptr;
-    QAudioOutput*        m_audioOutput     = nullptr;
+    AudioRingBuffer*     m_audioRingBuffer = nullptr;
+    SDLAudio*            m_sdlAudio        = nullptr;
 
     AVFormatContext*     m_fmtCtx          = nullptr;
     AVStream*            m_videoStream     = nullptr;
@@ -84,10 +78,15 @@ private:
     AVCodecContext*      m_videoCodecCtx   = nullptr;
     AVCodecContext*      m_audioCodecCtx   = nullptr;
 
-    QTimer*              m_reconnectTimer = nullptr;
-    int                  m_reconnectDelayMs = 1000;
+    std::atomic<int>     m_pktSerial{0};
+
+    int                  m_reconnectTimerId = 0;
     int                  m_backoffCount     = 0;
+    bool                 m_audioEnabled     = false; // 音频解码是否启用
 
     std::atomic<uint64_t> m_generation{1};
     std::string           m_url;
+
+    StateCallback m_onState;
+    ErrorCallback m_onError;
 };

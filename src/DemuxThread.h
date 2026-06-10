@@ -1,8 +1,9 @@
 #pragma once
 
 #include "PacketQueue.h"
-#include <QThread>
+#include <thread>
 #include <atomic>
+#include <functional>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,27 +16,28 @@ extern "C" {
 class PlayerStateMachine;
 class PlayerStats;
 
-class DemuxThread : public QThread {
-    Q_OBJECT
+class DemuxThread {
 public:
+    using StreamErrorCallback = std::function<void()>;
+
     DemuxThread(PlayerStateMachine* sm, PlayerStats* stats,
-                PacketQueue* videoQueue, PacketQueue* audioQueue,
-                QObject* parent = nullptr);
-    ~DemuxThread() override;
+                PacketQueue* videoQueue, PacketQueue* audioQueue);
+    ~DemuxThread();
 
     void prepareForOpen();
     void setContext(AVFormatContext* fmtCtx, AVStream* videoStream, AVStream* audioStream);
+    void setStreamErrorCallback(StreamErrorCallback cb) { m_onStreamError = std::move(cb); }
+    void setSerial(int serial) { m_serial = serial; }
+
+    void start();
     void stop();
+    void join();
 
     static int interruptCallback(void* opaque);
 
-signals:
-    void streamError();
-
-protected:
-    void run() override;
-
 private:
+    void run();
+
     PlayerStateMachine* m_stateMachine;
     PlayerStats*        m_stats;
     AVFormatContext*    m_fmtCtx = nullptr;
@@ -45,5 +47,9 @@ private:
     PacketQueue*        m_audioQueue;
 
     std::atomic<bool>   m_abort{false};
+    std::atomic<int>    m_serial{0};
     int64_t             m_lastReadTime = 0;
+
+    StreamErrorCallback m_onStreamError;
+    std::thread         m_thread;
 };
