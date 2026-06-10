@@ -65,7 +65,7 @@ int main(int argc, char* argv[]) {
         LOG_ERROR("Error: %s", msg);
     });
 
-    const char* url = "rtsp://192.168.42.116:25544/2026_06_10";
+    const char* url = "rtsp://127.0.0.1:25544/2026_06_10";
     if (argc > 1) url = argv[1];
 
     LOG_INFO("Open: %s", url);
