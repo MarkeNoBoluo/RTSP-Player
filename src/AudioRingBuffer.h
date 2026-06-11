@@ -28,6 +28,13 @@ public:
     int  serial() const { return m_serial.load(); }
     void setSerial(int s) { m_serial.store(s); }
 
+    int currentFillBytes() const;
+    int readEmptyCount() const;
+    int writeBlockCount() const;
+
+    // Thread-safe snapshot: locks, reads all three counters atomically
+    void snapshotRingCounters(int& outFillBytes, int& outReadEmpty, int& outWriteBlocked);
+
 private:
     static constexpr int kMaxChunks = 32;
 
@@ -46,4 +53,7 @@ private:
 
     PlayerStats* m_stats = nullptr;
     std::atomic<bool> m_abort{false};
+
+    std::atomic<int> m_readEmptyCount{0};
+    std::atomic<int> m_writeBlockCount{0};
 };

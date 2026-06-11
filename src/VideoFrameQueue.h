@@ -3,6 +3,9 @@
 #include "Common.h"
 #include <atomic>
 #include <cstdint>
+#include <mutex>
+
+class PlayerStats;
 
 class VideoFrameQueue {
 public:
@@ -11,7 +14,7 @@ public:
     VideoFrameQueue();
     ~VideoFrameQueue();
 
-    bool writeFrame(AVFrame* srcFrame, int64_t pts, int serial);
+    bool writeFrame(AVFrame* srcFrame, int64_t pts, int serial, class PlayerStats* stats = nullptr);
 
     bool hasNewFrame() const;
     int count() const { return m_count.load(std::memory_order_acquire); }
@@ -33,6 +36,8 @@ private:
     int m_renderIdx{0};
     int m_displayIdx{0};
     std::atomic<int> m_count{0};
+
+    mutable std::mutex m_mutex;
 
     int m_width{0};
     int m_height{0};

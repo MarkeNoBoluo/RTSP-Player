@@ -24,6 +24,26 @@ public:
     std::atomic<int>     audioOverruns{0};
     std::atomic<int>     videoQueuePeakMs{0};
     std::atomic<int>     audioQueuePeakMs{0};
+    std::atomic<int>     videoQueuePeakPkts{0};
+
+    // Decode timing (microseconds)
+    std::atomic<int64_t> decodeSendUsMax{0};
+    std::atomic<int64_t> decodeReceiveUsMax{0};
+    std::atomic<int>     decodeErrorCount{0};
+
+    // FrameQueue
+    std::atomic<int>     frameQueueWriteFailures{0};
+    std::atomic<int>     frameQueueOverwrites{0};
+
+    // Audio real counters
+    std::atomic<int64_t> audioPacketsReceived{0};
+    std::atomic<int64_t> audioFramesDecoded{0};
+    std::atomic<int64_t> audioBytesWritten{0};
+
+    // AudioRingBuffer
+    std::atomic<int>     audioRingFillBytes{0};
+    std::atomic<int>     audioRingReadEmpty{0};
+    std::atomic<int>     audioRingWriteBlocked{0};
 
     // Pacing (all in microseconds)
     std::atomic<int64_t> paintIntervalMinUs{0};

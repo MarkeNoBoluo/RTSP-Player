@@ -5,8 +5,11 @@
 #include "AVClock.h"
 #include "PlayerStats.h"
 #include "StreamLifecycleManager.h"
+#include "AudioRingBuffer.h"
 #include "SDLRenderer.h"
 #include "logger/Logger.h"
+
+#include <algorithm>
 
 extern "C" {
 #include <libavutil/time.h>
@@ -78,60 +81,59 @@ void RTSPlayer::videoRefresh() {
     m_inVideoRefresh = true;
     struct _ { bool& flag; ~_() { flag = false; } } _guard{m_inVideoRefresh};
 
-    if (!m_frameQueue->hasNewFrame()) return;
-
-    int globalSerial = pktSerial();
-    int frameSerial = m_frameQueue->peekDisplaySerial();
-    if (frameSerial >= 0 && frameSerial != globalSerial) {
-        m_frameQueue->discardAndAdvance();
-        return;
-    }
-
-    int64_t pts = m_frameQueue->peekDisplayPts();
-    if (pts < 0) return;
-
-    if (m_clock->isReady()) {
-        int64_t nowUs = av_gettime_relative();
-        auto vc = m_clock->videoClock();
-        int64_t clockPtsUs = static_cast<int64_t>(vc.pts * AV_TIME_BASE);
-        int64_t elapsedUs = nowUs - vc.systemTime;
-        int64_t currentPtsUs = clockPtsUs + elapsedUs;
-
-        if (m_clock->hasAudio()) {
-            double drift = m_clock->drift();
-            double frameDuration = 0.033;
-            double delay = frameDuration + drift;
-            if (delay < 0.005) delay = 0.005;
-            if (delay > 0.5) delay = 0.5;
-
-            if (pts > currentPtsUs + static_cast<int64_t>(delay * AV_TIME_BASE)) {
-                return;
-            }
-        } else {
-            if (pts > currentPtsUs + 20000) {
-                return;
-            }
+    while (m_frameQueue->hasNewFrame()) {
+        int globalSerial = pktSerial();
+        int frameSerial = m_frameQueue->peekDisplaySerial();
+        if (frameSerial >= 0 && frameSerial != globalSerial) {
+            m_frameQueue->discardAndAdvance();
+            continue;
         }
 
-        int64_t latencyUs = currentPtsUs - pts;
-        m_stats->lastLatenessUs = latencyUs;
+        int64_t pts = m_frameQueue->peekDisplayPts();
+        if (pts < 0) break;
 
-        {
-            int64_t absLat = (latencyUs < 0) ? -latencyUs : latencyUs;
-            int64_t curMax = m_stats->maxLatenessUs.load(std::memory_order_acquire);
-            while (absLat > curMax) {
-                if (m_stats->maxLatenessUs.compare_exchange_weak(
-                        curMax, absLat,
-                        std::memory_order_release, std::memory_order_acquire)) {
+        if (m_clock->isReady()) {
+            int64_t nowUs = av_gettime_relative();
+            auto vc = m_clock->videoClock();
+            int64_t clockPtsUs = static_cast<int64_t>(vc.pts * AV_TIME_BASE);
+            int64_t elapsedUs = nowUs - vc.systemTime;
+            int64_t currentPtsUs = clockPtsUs + elapsedUs;
+
+            if (m_clock->hasAudio()) {
+                double drift = m_clock->drift();
+                double frameDuration = 0.033;
+                double delay = frameDuration + drift;
+                if (delay < 0.005) delay = 0.005;
+                if (delay > 0.5) delay = 0.5;
+
+                if (pts > currentPtsUs + static_cast<int64_t>(delay * AV_TIME_BASE)) {
+                    break;
+                }
+            } else {
+                if (pts > currentPtsUs + 20000) {
                     break;
                 }
             }
-        }
 
-        if (latencyUs > 50000) {
-            if (m_consecutiveDrops >= 2 && latencyUs < 200000) {
-                // Burst recovery: render to re-anchor video clock
-            } else {
+            int64_t latencyUs = currentPtsUs - pts;
+            m_stats->lastLatenessUs = latencyUs;
+
+            {
+                int64_t absLat = (latencyUs < 0) ? -latencyUs : latencyUs;
+                int64_t curMax = m_stats->maxLatenessUs.load(std::memory_order_acquire);
+                while (absLat > curMax) {
+                    if (m_stats->maxLatenessUs.compare_exchange_weak(
+                            curMax, absLat,
+                            std::memory_order_release, std::memory_order_acquire)) {
+                        break;
+                    }
+                }
+            }
+
+            if (latencyUs > 50000) {
+                if (m_consecutiveDrops >= 2 && latencyUs < 200000) {
+                    break;
+                }
                 m_frameQueue->discardAndAdvance();
                 m_stats->framesDropped++;
                 m_consecutiveDrops++;
@@ -145,12 +147,27 @@ void RTSPlayer::videoRefresh() {
                     }
                 }
 
-                LOG_DEBUG("Drop frame pts=%.3fs latency=%lldus (burst=%d)",
-                          pts / 1000000.0, (long long)latencyUs, m_consecutiveDrops);
-                return;
+                int64_t driftUs = 0;
+                if (m_clock->hasAudio()) {
+                    driftUs = static_cast<int64_t>(m_clock->drift() * AV_TIME_BASE);
+                }
+                LOG_INFO("Drop frame pts=%.3fs latency=%lldus drift=%lldus burst=%d (delay=%.1fms)",
+                         pts / 1000000.0, (long long)latencyUs, (long long)driftUs,
+                         (int)m_consecutiveDrops,
+                         m_clock->hasAudio()
+                             ? (std::min(0.5, std::max(0.005, 0.033 + m_clock->drift())) * 1000.0)
+                             : 20.0);
+                continue;
             }
         }
+
+        break;
     }
+
+    if (!m_frameQueue->hasNewFrame()) return;
+
+    int64_t pts = m_frameQueue->peekDisplayPts();
+    if (pts < 0) return;
 
     AVFrame* frame = m_frameQueue->displayFrame();
     if (!frame || !frame->data[0]) return;
@@ -178,11 +195,20 @@ void RTSPlayer::videoRefresh() {
     auto rn = m_stats->framesRendered.load();
     if (rn <= 3 || rn % 30 == 0) {
         if (rn % 30 == 0) {
-            m_stats->recordQueueDepth(
-                m_videoQueue->durationMs(),
-                m_frameQueue->count() * 33);
+            int vqPeakMs = 0, vqPeakPkts = 0;
+            m_videoQueue->drainPeak(vqPeakMs, vqPeakPkts);
+            m_stats->recordQueueDepth(vqPeakMs, m_frameQueue->count() * 33);
+            m_stats->videoQueuePeakPkts.store(vqPeakPkts, std::memory_order_relaxed);
+            if (auto* rb = m_lifecycle->audioRingBuffer()) {
+                int fillBytes = 0, readEmpty = 0, writeBlocked = 0;
+                rb->snapshotRingCounters(fillBytes, readEmpty, writeBlocked);
+                m_stats->audioRingFillBytes.store(fillBytes, std::memory_order_relaxed);
+                m_stats->audioRingReadEmpty.store(readEmpty, std::memory_order_relaxed);
+                m_stats->audioRingWriteBlocked.store(writeBlocked, std::memory_order_relaxed);
+            }
         }
         LOG_INFO("Render #%lld pts=%.3fs latency=%lldus",
                  (long long)rn, pts / 1000000.0, (long long)m_stats->lastLatenessUs.load());
     }
 }
+

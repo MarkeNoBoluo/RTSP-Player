@@ -22,8 +22,11 @@ bool AudioRingBuffer::write(const uint8_t* data, int len, double pts, int serial
 
     std::unique_lock<std::mutex> lock(m_mutex);
 
-    while (m_avail >= kMaxChunks && !m_abort) {
-        m_cv.wait(lock);
+    if (m_avail >= kMaxChunks) {
+        m_writeBlockCount.fetch_add(1, std::memory_order_relaxed);
+        while (m_avail >= kMaxChunks && !m_abort) {
+            m_cv.wait(lock);
+        }
     }
     if (m_abort) return false;
 
@@ -51,6 +54,7 @@ int AudioRingBuffer::read(uint8_t* dst, int len, double* outPts, int* outChunkOf
 
     while (filled < len) {
         if (m_avail <= 0) {
+            m_readEmptyCount.fetch_add(1, std::memory_order_relaxed);
             if (m_stats) m_stats->audioUnderruns++;
             break;
         }
@@ -94,6 +98,8 @@ void AudioRingBuffer::flush() {
     m_readIdx    = 0;
     m_readOffset = 0;
     m_avail      = 0;
+    m_writeBlockCount.store(0, std::memory_order_relaxed);
+    m_readEmptyCount.store(0, std::memory_order_relaxed);
     m_serial.fetch_add(1);
     m_abort = false;
 }
@@ -101,4 +107,33 @@ void AudioRingBuffer::flush() {
 void AudioRingBuffer::abort() {
     m_abort = true;
     m_cv.notify_all();
+}
+
+int AudioRingBuffer::currentFillBytes() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_mutex));
+    int total = 0;
+    for (int i = 0; i < m_avail; i++) {
+        int idx = (m_readIdx + i) % kMaxChunks;
+        total += m_chunks[idx].len;
+    }
+    return total;
+}
+
+int AudioRingBuffer::readEmptyCount() const {
+    return m_readEmptyCount.load(std::memory_order_relaxed);
+}
+
+int AudioRingBuffer::writeBlockCount() const {
+    return m_writeBlockCount.load(std::memory_order_relaxed);
+}
+
+void AudioRingBuffer::snapshotRingCounters(int& outFillBytes, int& outReadEmpty, int& outWriteBlocked) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    outFillBytes = 0;
+    for (int i = 0; i < m_avail; i++) {
+        int idx = (m_readIdx + i) % kMaxChunks;
+        outFillBytes += m_chunks[idx].len;
+    }
+    outReadEmpty    = m_readEmptyCount.load(std::memory_order_relaxed);
+    outWriteBlocked = m_writeBlockCount.load(std::memory_order_relaxed);
 }

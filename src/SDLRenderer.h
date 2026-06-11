@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstdint>
+
 struct AVFrame;
+struct SwsContext;
 
 class IRenderer {
 public:
@@ -28,11 +31,18 @@ public:
 private:
     void recreateTexture(int width, int height);
     void updateDisplayRect();
+    bool ensureSwsContext(int width, int height);
+    int convertToNV12(AVFrame* src, uint8_t** outPlanes, int* outStrides);
 
     SDL_Window*   m_window   = nullptr;
     SDL_Renderer* m_renderer = nullptr;
     SDL_Texture*  m_texture  = nullptr;
     SDL_Rect      m_dstRect{0, 0, 0, 0};
+
+    SwsContext* m_swsCtx   = nullptr;
+    uint8_t*    m_swsBuf   = nullptr;
+    int         m_swsBufW  = 0;
+    int         m_swsBufH  = 0;
 
     const char*   m_title;
     int m_texW = 0;

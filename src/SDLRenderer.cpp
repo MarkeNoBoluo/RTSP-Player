@@ -4,6 +4,11 @@
 
 #include <SDL.h>
 
+extern "C" {
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
+}
+
 SDLRenderer::SDLRenderer(const char* title, int w, int h)
     : m_title(title)
     , m_winW(w)
@@ -18,10 +23,17 @@ SDLRenderer::SDLRenderer(const char* title, int w, int h)
         return;
     }
 
-    m_renderer = SDL_CreateRenderer(m_window, -1, SDL_RENDERER_ACCELERATED);
+    m_renderer = SDL_CreateRenderer(m_window, -1,
+                                    SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!m_renderer) {
         LOG_ERROR("SDL_CreateRenderer failed: %s", SDL_GetError());
         return;
+    }
+
+    SDL_RendererInfo rinfo;
+    if (SDL_GetRendererInfo(m_renderer, &rinfo) == 0) {
+        LOG_INFO("SDL renderer: %s (flags=0x%x max=%dx%d)", rinfo.name, rinfo.flags,
+                 rinfo.max_texture_width, rinfo.max_texture_height);
     }
 
     LOG_INFO("SDL renderer created: %dx%d", w, h);
@@ -34,7 +46,55 @@ SDLRenderer::~SDLRenderer() {
 bool SDLRenderer::init(int width, int height) {
     recreateTexture(width, height);
     updateDisplayRect();
-    return m_texture != nullptr;
+    if (!m_swsCtx) {
+        ensureSwsContext(width, height);
+    }
+    return m_texture != nullptr && m_swsCtx != nullptr;
+}
+
+bool SDLRenderer::ensureSwsContext(int width, int height) {
+    if (m_swsBufW != width || m_swsBufH != height) {
+        delete[] m_swsBuf;
+        m_swsBuf = nullptr;
+        m_swsBufW = 0;
+        m_swsBufH = 0;
+    }
+    if (!m_swsBuf) {
+        int ySize  = width * height;
+        int uvSize = width * height / 2;
+        m_swsBuf   = new uint8_t[ySize + uvSize + 64];
+        m_swsBufW  = width;
+        m_swsBufH  = height;
+    }
+
+    sws_freeContext(m_swsCtx);
+    m_swsCtx = sws_getContext(width, height, AV_PIX_FMT_YUV420P,
+                              width, height, AV_PIX_FMT_NV12,
+                              SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+    if (!m_swsCtx) {
+        LOG_ERROR("sws_getContext failed for %dx%d YUV420P→NV12", width, height);
+        return false;
+    }
+    return true;
+}
+
+int SDLRenderer::convertToNV12(AVFrame* src, uint8_t** outPlanes, int* outStrides) {
+    int ySize  = m_swsBufW * m_swsBufH;
+    int width  = m_swsBufW;
+
+    outPlanes[0] = m_swsBuf;
+    outPlanes[1] = m_swsBuf + ySize;
+    outPlanes[2] = nullptr;
+    outPlanes[3] = nullptr;
+    outStrides[0] = width;
+    outStrides[1] = width;
+    outStrides[2] = 0;
+    outStrides[3] = 0;
+
+    int ret = sws_scale(m_swsCtx,
+                        src->data, src->linesize, 0, src->height,
+                        outPlanes, outStrides);
+    return ret;
 }
 
 void SDLRenderer::displayFrame(AVFrame* frame) {
@@ -43,18 +103,43 @@ void SDLRenderer::displayFrame(AVFrame* frame) {
     if (frame->width != m_texW || frame->height != m_texH || !m_texture) {
         recreateTexture(frame->width, frame->height);
         updateDisplayRect();
+        ensureSwsContext(frame->width, frame->height);
     }
+    if (!m_texture || !m_swsCtx) return;
 
-    if (!m_texture) return;
+    Uint64 t0 = SDL_GetPerformanceCounter();
 
-    SDL_UpdateYUVTexture(m_texture, nullptr,
-                         frame->data[0], frame->linesize[0],
-                         frame->data[1], frame->linesize[1],
-                         frame->data[2], frame->linesize[2]);
+    uint8_t* nv12Planes[4];
+    int      nv12Strides[4];
+    int scaledHeight = convertToNV12(frame, nv12Planes, nv12Strides);
+    if (scaledHeight <= 0) return;
+    (void)scaledHeight;
+
+    Uint64 t1 = SDL_GetPerformanceCounter();
+
+    SDL_UpdateNVTexture(m_texture, nullptr,
+                        nv12Planes[0], nv12Strides[0],
+                        nv12Planes[1], nv12Strides[1]);
+
+    Uint64 t2 = SDL_GetPerformanceCounter();
 
     SDL_RenderClear(m_renderer);
     SDL_RenderCopy(m_renderer, m_texture, nullptr, &m_dstRect);
     SDL_RenderPresent(m_renderer);
+
+    Uint64 t3 = SDL_GetPerformanceCounter();
+
+    static int frameCount = 0;
+    frameCount++;
+    if (frameCount <= 5 || frameCount % 30 == 0) {
+        Uint64 freq = SDL_GetPerformanceFrequency();
+        double swsMs   = 1000.0 * (t1 - t0) / freq;
+        double updMs   = 1000.0 * (t2 - t1) / freq;
+        double rendMs  = 1000.0 * (t3 - t2) / freq;
+        double totalMs = 1000.0 * (t3 - t0) / freq;
+        LOG_INFO("Render #%d: sws=%.1fms update=%.1fms rc+present=%.1fms total=%.1fms",
+                 frameCount, swsMs, updMs, rendMs, totalMs);
+    }
 }
 
 void SDLRenderer::setWindowSize(int w, int h) {
@@ -64,6 +149,10 @@ void SDLRenderer::setWindowSize(int w, int h) {
 }
 
 void SDLRenderer::destroy() {
+    if (m_swsCtx)  { sws_freeContext(m_swsCtx); m_swsCtx = nullptr; }
+    delete[] m_swsBuf;  m_swsBuf = nullptr;
+    m_swsBufW = 0; m_swsBufH = 0;
+
     if (m_texture)  { SDL_DestroyTexture(m_texture);   m_texture  = nullptr; }
     if (m_renderer) { SDL_DestroyRenderer(m_renderer); m_renderer = nullptr; }
     if (m_window)   { SDL_DestroyWindow(m_window);     m_window   = nullptr; }
@@ -76,7 +165,7 @@ void SDLRenderer::recreateTexture(int width, int height) {
     }
 
     m_texture = SDL_CreateTexture(m_renderer,
-                                  SDL_PIXELFORMAT_IYUV,
+                                  SDL_PIXELFORMAT_NV12,
                                   SDL_TEXTUREACCESS_STREAMING,
                                   width, height);
     if (!m_texture) {

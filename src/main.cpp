@@ -15,6 +15,7 @@ __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
 
 extern "C" {
 #include <libavutil/log.h>
+#include <libavutil/time.h>
 #include <libavformat/avformat.h>
 }
 
@@ -65,7 +66,8 @@ int main(int argc, char* argv[]) {
         LOG_ERROR("Error: %s", msg);
     });
 
-    const char* url = "rtsp://127.0.0.1:25544/2026_06_10";
+    // const char* url = "rtsp://127.0.0.1:25544/2026_06_10";
+    const char* url = "rtsp://192.168.42.116:25544/2026_06_11";
     if (argc > 1) url = argv[1];
 
     LOG_INFO("Open: %s", url);
@@ -108,9 +110,13 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        int64_t beforeUs = av_gettime_relative();
         player.videoRefresh();
-
-        SDL_Delay(1);
+        int64_t elapsedUs = av_gettime_relative() - beforeUs;
+        int64_t sleepUs = 1000 - elapsedUs;
+        if (sleepUs > 100) {
+            av_usleep((unsigned)sleepUs);
+        }
     }
 
     player.close();

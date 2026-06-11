@@ -1,4 +1,5 @@
 #include "VideoFrameQueue.h"
+#include "PlayerStats.h"
 #include "logger/Logger.h"
 
 extern "C" {
@@ -19,8 +20,17 @@ VideoFrameQueue::~VideoFrameQueue() {
     }
 }
 
-bool VideoFrameQueue::writeFrame(AVFrame* srcFrame, int64_t pts, int serial) {
-    if (m_count.load(std::memory_order_acquire) >= kSlotCount) return false;
+bool VideoFrameQueue::writeFrame(AVFrame* srcFrame, int64_t pts, int serial, PlayerStats* stats) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (m_count.load(std::memory_order_relaxed) >= kSlotCount) {
+        m_displayIdx = (m_displayIdx + 1) % kSlotCount;
+        m_count.fetch_sub(1, std::memory_order_relaxed);
+        if (stats) {
+            stats->frameQueueOverwrites.fetch_add(1, std::memory_order_relaxed);
+        }
+        LOG_DEBUG("VideoFrameQueue overwrite: replacing oldest pending frame");
+    }
 
     int di = m_decodeIdx;
 
@@ -36,35 +46,40 @@ bool VideoFrameQueue::writeFrame(AVFrame* srcFrame, int64_t pts, int serial) {
 
     m_renderIdx = di;
     m_decodeIdx = (di + 1) % kSlotCount;
-    m_count.fetch_add(1, std::memory_order_release);
+    m_count.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
 bool VideoFrameQueue::hasNewFrame() const {
-    return m_count.load(std::memory_order_acquire) > 0;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_count.load(std::memory_order_relaxed) > 0;
 }
 
 int64_t VideoFrameQueue::peekDisplayPts() const {
-    if (m_count.load(std::memory_order_acquire) == 0) return -1;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_count.load(std::memory_order_relaxed) == 0) return -1;
     int di = m_displayIdx;
     if (!m_avFrames[di]->data[0]) return -1;
     return m_slots[di].pts;
 }
 
 int VideoFrameQueue::peekDisplaySerial() const {
-    if (m_count.load(std::memory_order_acquire) == 0) return -1;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_count.load(std::memory_order_relaxed) == 0) return -1;
     return m_slots[m_displayIdx].serial;
 }
 
 AVFrame* VideoFrameQueue::displayFrame() {
-    if (m_count.load(std::memory_order_acquire) == 0) return nullptr;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_count.load(std::memory_order_relaxed) == 0) return nullptr;
     return m_avFrames[m_displayIdx];
 }
 
 void VideoFrameQueue::advanceDisplay() {
-    if (m_count.load(std::memory_order_acquire) == 0) return;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_count.load(std::memory_order_relaxed) == 0) return;
     m_displayIdx = (m_displayIdx + 1) % kSlotCount;
-    m_count.fetch_sub(1, std::memory_order_release);
+    m_count.fetch_sub(1, std::memory_order_relaxed);
 }
 
 void VideoFrameQueue::discardAndAdvance() {
@@ -72,6 +87,7 @@ void VideoFrameQueue::discardAndAdvance() {
 }
 
 void VideoFrameQueue::flush() {
+    std::lock_guard<std::mutex> lock(m_mutex);
     for (int i = 0; i < kSlotCount; i++) {
         av_frame_unref(m_avFrames[i]);
         m_slots[i].serial = 0;

@@ -43,6 +43,8 @@ public:
     PlayerStats* stats()    const { return m_stats; }
     PlayerState  state()    const;
 
+    class AudioRingBuffer* audioRingBuffer() const { return m_audioRingBuffer; }
+
     int  pktSerial() const { return m_pktSerial.load(std::memory_order_acquire); }
     void doReconnect();
 

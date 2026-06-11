@@ -2,6 +2,7 @@
 #include "AudioRingBuffer.h"
 #include "PacketQueue.h"
 #include "AVClock.h"
+#include "PlayerStats.h"
 #include "logger/Logger.h"
 
 #include <cstring>
@@ -13,13 +14,14 @@ extern "C" {
 
 AudioWorker::AudioWorker(AVCodecContext* codecCtx, AVRational timeBase,
                          PacketQueue* queue, AVClock* clock,
-                         AudioRingBuffer* ringBuffer)
+                         AudioRingBuffer* ringBuffer, PlayerStats* stats)
     : m_codecCtx(codecCtx)
     , m_timeBase(timeBase.num > 0 ? timeBase : AVRational{1, 90000})
     , m_queue(queue)
     , m_clock(clock)
     , m_ringBuffer(ringBuffer)
-    , m_writeWavEnabled(false)
+    , m_stats(stats)
+    // , m_writeWavEnabled(false)
 {
 }
 
@@ -46,74 +48,78 @@ void AudioWorker::join() {
     }
 }
 
-void AudioWorker::writeWavHeader() {
-    if (!m_wavFile) return;
-    uint8_t header[44] = {0};
-    int sampleRate = kTargetRate;
-    int channels   = kTargetChannels;
-    int bits       = 16;
-    int byteRate   = sampleRate * channels * bits / 8;
-    int blockAlign = channels * bits / 8;
+// void AudioWorker::writeWavHeader() {
+//     if (!m_wavFile) return;
+//     uint8_t header[44] = {0};
+//     int sampleRate = kTargetRate;
+//     int channels   = kTargetChannels;
+//     int bits       = 16;
+//     int byteRate   = sampleRate * channels * bits / 8;
+//     int blockAlign = channels * bits / 8;
 
-    memcpy(header,     "RIFF", 4);
-    memcpy(header + 8, "WAVE", 4);
-    memcpy(header + 12, "fmt ", 4);
-    header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0;
-    header[20] = 1;  header[21] = 0;
-    header[22] = channels & 0xFF;
-    header[23] = (channels >> 8) & 0xFF;
-    header[24] = sampleRate & 0xFF;
-    header[25] = (sampleRate >> 8) & 0xFF;
-    header[26] = (sampleRate >> 16) & 0xFF;
-    header[27] = (sampleRate >> 24) & 0xFF;
-    header[28] = byteRate & 0xFF;
-    header[29] = (byteRate >> 8) & 0xFF;
-    header[30] = (byteRate >> 16) & 0xFF;
-    header[31] = (byteRate >> 24) & 0xFF;
-    header[32] = blockAlign & 0xFF;
-    header[33] = (blockAlign >> 8) & 0xFF;
-    header[34] = bits & 0xFF;
-    header[35] = (bits >> 8) & 0xFF;
-    memcpy(header + 36, "data", 4);
+//     memcpy(header,     "RIFF", 4);
+//     memcpy(header + 8, "WAVE", 4);
+//     memcpy(header + 12, "fmt ", 4);
+//     header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0;
+//     header[20] = 1;  header[21] = 0;
+//     header[22] = channels & 0xFF;
+//     header[23] = (channels >> 8) & 0xFF;
+//     header[24] = sampleRate & 0xFF;
+//     header[25] = (sampleRate >> 8) & 0xFF;
+//     header[26] = (sampleRate >> 16) & 0xFF;
+//     header[27] = (sampleRate >> 24) & 0xFF;
+//     header[28] = byteRate & 0xFF;
+//     header[29] = (byteRate >> 8) & 0xFF;
+//     header[30] = (byteRate >> 16) & 0xFF;
+//     header[31] = (byteRate >> 24) & 0xFF;
+//     header[32] = blockAlign & 0xFF;
+//     header[33] = (blockAlign >> 8) & 0xFF;
+//     header[34] = bits & 0xFF;
+//     header[35] = (bits >> 8) & 0xFF;
+//     memcpy(header + 36, "data", 4);
 
-    fwrite(header, 1, 44, m_wavFile);
-}
+//     fwrite(header, 1, 44, m_wavFile);
+// }
 
-void AudioWorker::updateWavHeader() {
-    if (!m_wavFile) return;
-    int fileSize = 36 + m_dataSize;
-    fseek(m_wavFile, 4, SEEK_SET);
-    fwrite(&fileSize, 4, 1, m_wavFile);
-    fseek(m_wavFile, 40, SEEK_SET);
-    fwrite(&m_dataSize, 4, 1, m_wavFile);
-}
+// void AudioWorker::updateWavHeader() {
+//     if (!m_wavFile) return;
+//     int fileSize = 36 + m_dataSize;
+//     fseek(m_wavFile, 4, SEEK_SET);
+//     fwrite(&fileSize, 4, 1, m_wavFile);
+//     fseek(m_wavFile, 40, SEEK_SET);
+//     fwrite(&m_dataSize, 4, 1, m_wavFile);
+// }
 
 void AudioWorker::run() {
     m_running = true;
 
     LOG_INFO("Audio worker starting");
 
-    m_wavFile = fopen(kWavPath, "wb");
-    if (m_wavFile && m_writeWavEnabled) {
-        writeWavHeader();
-        LOG_INFO("WAV file opened for diagnostic: %s", kWavPath);
-    }
+    // m_wavFile = fopen(kWavPath, "wb");
+    // if (m_wavFile && m_writeWavEnabled) {
+    //     writeWavHeader();
+    //     LOG_INFO("WAV file opened for diagnostic: %s", kWavPath);
+    // }
 
     AVPacket* pkt = av_packet_alloc();
     AVFrame*  frame = av_frame_alloc();
 
     int timeoutCount = 0;
-    bool hasAudio = false;
+    int64_t packetsReceived = 0;
+    int64_t framesDecoded = 0;
+    int64_t bytesWritten = 0;
     int curSerial = m_serial.load(std::memory_order_acquire);
+
+    m_ready.store(true, std::memory_order_release);
 
     while (m_running) {
         if (!m_queue->pop(pkt, 100)) {
             timeoutCount++;
-            if (timeoutCount == 50 && !hasAudio) {
+            if (timeoutCount == 50 && packetsReceived == 0) {
                 LOG_INFO("Audio: no packets after 5s, exiting");
                 break;
             }
-            if (timeoutCount >= 300 && hasAudio) {
+            if (timeoutCount >= 300 && packetsReceived > 0) {
                 LOG_INFO("Audio: queue empty 30s, flushing");
                 avcodec_send_packet(m_codecCtx, nullptr);
                 while (true) {
@@ -126,6 +132,7 @@ void AudioWorker::run() {
             continue;
         }
         timeoutCount = 0;
+        packetsReceived++;
 
         // Check serial BEFORE send_packet to avoid flushing a just-sent packet
         int newSerial = m_serial.load(std::memory_order_acquire);
@@ -184,10 +191,10 @@ void AudioWorker::run() {
 
             int actualSize = converted * kTargetChannels * 2;
 
-            if (m_wavFile && m_writeWavEnabled) {
-                fwrite(dstBuf, 1, actualSize, m_wavFile);
-                m_dataSize += actualSize;
-            }
+            // if (m_wavFile && m_writeWavEnabled) {
+            //     fwrite(dstBuf, 1, actualSize, m_wavFile);
+            //     m_dataSize += actualSize;
+            // }
 
             int64_t pts = frame->pts;
             if (pts == AV_NOPTS_VALUE) pts = frame->pkt_dts;
@@ -197,8 +204,16 @@ void AudioWorker::run() {
                 m_ringBuffer->write(dstBuf, actualSize, ptsSec, curSerial);
             }
 
-            if (!hasAudio) {
-                hasAudio = true;
+            framesDecoded++;
+            bytesWritten += actualSize;
+
+            if (m_stats && framesDecoded % 10 == 0) {
+                m_stats->audioPacketsReceived.store(packetsReceived, std::memory_order_relaxed);
+                m_stats->audioFramesDecoded.store(framesDecoded, std::memory_order_relaxed);
+                m_stats->audioBytesWritten.store(bytesWritten, std::memory_order_relaxed);
+            }
+
+            if (framesDecoded == 1) {
                 LOG_INFO("Audio started: first %d bytes", actualSize);
             }
 
@@ -206,16 +221,23 @@ void AudioWorker::run() {
         }
     }
 
-    if (m_wavFile && m_writeWavEnabled) {
-        updateWavHeader();
-        fclose(m_wavFile);
-        m_wavFile = nullptr;
-        LOG_INFO("WAV file closed: %s (%d bytes PCM)", kWavPath, m_dataSize);
-    }
+    // if (m_wavFile && m_writeWavEnabled) {
+    //     updateWavHeader();
+    //     fclose(m_wavFile);
+    //     m_wavFile = nullptr;
+    //     LOG_INFO("WAV file closed: %s (%d bytes PCM)", kWavPath, m_dataSize);
+    // }
 
     swr_free(&m_swrCtx);
     av_frame_free(&frame);
     av_packet_free(&pkt);
 
-    LOG_INFO("Audio worker stopped (received=%d)", hasAudio);
+    if (m_stats) {
+        m_stats->audioPacketsReceived.store(packetsReceived, std::memory_order_release);
+        m_stats->audioFramesDecoded.store(framesDecoded, std::memory_order_release);
+        m_stats->audioBytesWritten.store(bytesWritten, std::memory_order_release);
+    }
+
+    LOG_INFO("Audio worker stopped: pkts=%lld frames=%lld bytes=%lld",
+             (long long)packetsReceived, (long long)framesDecoded, (long long)bytesWritten);
 }

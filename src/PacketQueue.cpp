@@ -8,12 +8,13 @@ PacketQueue::~PacketQueue() {
     flush();
 }
 
-void PacketQueue::init(AVRational timeBase, int capacityMs) {
+void PacketQueue::init(AVRational timeBase, int capacityMs, const char* name) {
     assert(!m_initialized);
     m_initialized = true;
     m_capacityMs  = capacityMs;
     m_timeBaseUs  = av_q2d(timeBase) * 1000000.0;
-    LOG_DEBUG("PacketQueue initialized: capacity=%dms, timeBase=%f", capacityMs, m_timeBaseUs);
+    m_name        = name ? name : "";
+    LOG_DEBUG("PacketQueue[%s] initialized: capacity=%dms, timeBase=%f", m_name.c_str(), capacityMs, m_timeBaseUs);
 }
 
 bool PacketQueue::push(AVPacket* pkt, int serial) {
@@ -25,6 +26,15 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
     }
 
     while (!m_queue.empty() && m_totalDurationUs + durUs > m_capacityMs * 1000LL) {
+        if (!m_abort) {
+            bool freed = m_cond.wait_for(lock, std::chrono::milliseconds(100),
+                [this, durUs] { return m_totalDurationUs + durUs <= m_capacityMs * 1000LL || m_abort; });
+            if (m_abort) return false;
+            if (freed) break;
+        } else {
+            return false;
+        }
+
         auto it = m_queue.begin();
         bool dropped = false;
 
@@ -34,7 +44,7 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
                 av_packet_free(&iter->pkt);
                 m_queue.erase(iter);
                 dropped = true;
-                LOG_WARN("PacketQueue dropping non-key frame, queue=%dms", m_totalDurationUs / 1000);
+                LOG_WARN("PacketQueue[%s] dropping non-key frame, queue=%dms", m_name.c_str(), m_totalDurationUs / 1000);
                 break;
             }
         }
@@ -44,7 +54,7 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
             av_packet_free(&m_queue.front().pkt);
             m_queue.pop_front();
             m_keyFrameDropped.store(true, std::memory_order_release);
-            LOG_WARN("PacketQueue dropping oldest key frame, queue=%dms", m_totalDurationUs / 1000);
+            LOG_WARN("PacketQueue[%s] dropping oldest key frame, queue=%dms", m_name.c_str(), m_totalDurationUs / 1000);
         }
     }
 
@@ -53,6 +63,12 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
 
     m_queue.push_back({copy, durUs, serial});
     m_totalDurationUs += durUs;
+
+    int curDurationMs = static_cast<int>(m_totalDurationUs / 1000);
+    if (curDurationMs > m_peakDurationMs) m_peakDurationMs = curDurationMs;
+    int curSize = static_cast<int>(m_queue.size());
+    if (curSize > m_peakSize) m_peakSize = curSize;
+
     m_cond.notify_one();
     return true;
 }
@@ -79,17 +95,20 @@ bool PacketQueue::pop(AVPacket* pkt, int timeoutMs) {
     m_totalDurationUs -= node.durationUs;
     av_packet_free(&node.pkt);
     m_queue.pop_front();
+    m_cond.notify_one();
     return true;
 }
 
 void PacketQueue::flush() {
     std::unique_lock<std::mutex> lock(m_mutex);
-    LOG_INFO("PacketQueue flush: %d packets cleared", (int)m_queue.size());
+    LOG_INFO("PacketQueue[%s] flush: %d packets cleared", m_name.c_str(), (int)m_queue.size());
     while (!m_queue.empty()) {
         av_packet_free(&m_queue.front().pkt);
         m_queue.pop_front();
     }
     m_totalDurationUs = 0;
+    m_peakDurationMs = 0;
+    m_peakSize = 0;
     m_initialized = false;
     m_abort = false;
     m_cond.notify_all();
@@ -98,7 +117,7 @@ void PacketQueue::flush() {
 void PacketQueue::abort() {
     m_abort = true;
     m_cond.notify_all();
-    LOG_INFO("PacketQueue aborted");
+    LOG_INFO("PacketQueue[%s] aborted", m_name.c_str());
 }
 
 int PacketQueue::size() {
@@ -112,4 +131,12 @@ int PacketQueue::durationMs() const {
 
 bool PacketQueue::checkKeyFrameDropped() {
     return m_keyFrameDropped.exchange(false, std::memory_order_acq_rel);
+}
+
+void PacketQueue::drainPeak(int& outDurationMs, int& outSize) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    outDurationMs = m_peakDurationMs;
+    outSize = m_peakSize;
+    m_peakDurationMs = 0;
+    m_peakSize = 0;
 }

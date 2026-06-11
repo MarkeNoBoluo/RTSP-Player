@@ -12,6 +12,8 @@
 #include "logger/Logger.h"
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <SDL.h>
 
 extern "C" {
@@ -174,7 +176,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_videoStream   = m_fmtCtx->streams[videoIdx];
         m_videoCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_videoCodecPar, m_videoStream->codecpar);
-        m_videoQueue->init(m_videoStream->time_base, 1000);
+        m_videoQueue->init(m_videoStream->time_base, 1000, "video");
         LOG_INFO("Video stream: index=%d, codec=%d, %dx%d",
                  videoIdx, m_videoCodecPar->codec_id,
                  m_videoCodecPar->width, m_videoCodecPar->height);
@@ -184,7 +186,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_audioStream   = m_fmtCtx->streams[audioIdx];
         m_audioCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_audioCodecPar, m_audioStream->codecpar);
-        m_audioQueue->init(m_audioStream->time_base, 80);
+        m_audioQueue->init(m_audioStream->time_base, 200, "audio");
         LOG_INFO("Audio stream: index=%d, codec=%d, %dHz/%dch",
                  audioIdx, m_audioCodecPar->codec_id,
                  m_audioCodecPar->sample_rate, m_audioCodecPar->channels);
@@ -270,8 +272,8 @@ void StreamLifecycleManager::startThreads() {
             m_audioRingBuffer = nullptr;
         } else {
             m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
-                                             m_audioQueue, m_clock,
-                                             m_audioRingBuffer);
+                                              m_audioQueue, m_clock,
+                                              m_audioRingBuffer, m_stats);
             LOG_INFO("Audio pipeline: SDLAudio + AudioRingBuffer(100ms)");
         }
     }
@@ -279,11 +281,41 @@ void StreamLifecycleManager::startThreads() {
     // Set initial serial
     incrementSerial();
 
-    // Start all threads
-    m_demuxThread->start();
+    // Start decoder threads first, wait for ready, then start demux
     if (m_decodeThread) m_decodeThread->start();
     if (m_audioWorker && m_audioEnabled) m_audioWorker->start();
     if (m_sdlAudio && m_audioEnabled) m_sdlAudio->start();
+
+    // Wait for video decode thread to signal ready (timeout 2s)
+    if (m_decodeThread) {
+        int waited = 0;
+        while (!m_decodeThread->isReady() && waited < 2000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            waited += 5;
+        }
+        if (!m_decodeThread->isReady()) {
+            LOG_WARN("Video decode thread not ready after %dms, starting demux anyway", waited);
+        } else {
+            LOG_DEBUG("Video decode thread ready after %dms", waited);
+        }
+    }
+
+    // Wait for audio worker to signal ready (timeout 2s)
+    if (m_audioWorker && m_audioEnabled) {
+        int waited = 0;
+        while (!m_audioWorker->isReady() && waited < 2000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            waited += 5;
+        }
+        if (!m_audioWorker->isReady()) {
+            LOG_WARN("Audio worker not ready after %dms, starting demux anyway", waited);
+        } else {
+            LOG_DEBUG("Audio worker ready after %dms", waited);
+        }
+    }
+
+    // Now start demux — decoders are ready to consume
+    m_demuxThread->start();
 
     LOG_INFO("All threads started");
 }

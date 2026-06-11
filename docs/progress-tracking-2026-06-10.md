@@ -166,10 +166,10 @@ mmco: unref short failure                         (启动时)
 
 | Phase | 目标 | 完成度 | 判定 |
 |-------|------|--------|------|
-| 1 | Video 秒开链路 | 75% | ⚠️ 可播放，但首帧延迟 ~8s（非秒开）。SDL 窗口渲染正常。 |
+| 1 | Video 秒开链路 | 80% | ⚠️ 启动同步完成，视频启动丢帧 13→0，但首帧仍约 8.8s。SDL 窗口渲染正常。 |
 | 2 | Frame Drop + A/V Sync | 60% | ⚠️ 丢帧机制工作（50ms 阈值 + 2帧 burst 恢复），但延迟累积导致大量关键帧丢弃和 burst 丢帧。A/V sync 基础计算正确。 |
 | 3 | Reconnect + Serial | 未测试 | ❌ 本次运行无断线事件。Serial 机制未在真实重连场景验证。 |
-| 4 | Audio 链路 | 40% | ⚠️ 可初始化并播放，但 60s 后持续欠载；`received=1` 不是包计数，仍缺真实音频计数器。 |
+| 4 | Audio 链路 | 45% | ⚠️ 部分完成，观测字段仍有可信度缺陷（数据竞争/统计口径问题）。60s 后持续欠载。 |
 | 5 | A/V Sync 精细调优 | 0% | ❌ 未开始。长期播放偏差 >30ms（目标），延迟尖峰频繁。 |
 | 6 | 生产化打磨 | 20% | ❌ 仅 2 分钟运行（目标 30 分钟）。CSV 统计框架可用但数据不足。无 resize/fullscreen 测试，无内存泄漏检查。 |
 
@@ -197,33 +197,34 @@ mmco: unref short failure                         (启动时)
 4. **线程启动同步**: `startThreads()` 中不要让 demux 先无约束读取。先启动 video decode / audio worker，等待它们进入 ready 状态后再放开 demux；或给 demux 增加 started barrier。
 5. **启动阶段验收**: 以同一条 localhost RTSP 流重跑 Release，目标是 `open()` 到首帧 <1s，启动阶段 keyframe drop 为 0，首个 CSV 采样中 decoded/rendered 接近源帧率。
 
+#### P1.5 — 数据可信度修复
+
+6. **修复统计口径与数据竞争**: `PacketQueue` 增加队列名日志和 `drainPeak()`；`AudioWorker` 周期性写入真实 `packetsReceived/framesDecoded/bytesWritten` 计数器；`AudioRingBuffer` 指标改成线程安全快照（`atomic` 或锁内 drain）。
+7. **标记队列来源**: `PacketQueue` 日志增加 `name/streamType` 字段，消除"音频队列丢弃"无法确认的歧义。
+
 #### P2 — 定位周期性卡顿
 
-6. **区分 decode-bound 与 sync-bound**: 若 stall 窗口内 `receive_frame` 耗时突增，优先查源流 GOP/IDR、解码器线程和丢参考帧；若 decode 正常但 render 等待/丢帧，优先修 A/V sync 和 burst recovery 策略。
-7. **谨慎调阈值**: 只有在确认不是 decode 阻塞后，再调整 50ms drop 阈值、burst recovery 和 `delay` 上限。当前不建议先扩队列或先放宽阈值。
+8. **区分 decode-bound 与 sync-bound**: 若 stall 窗口内 `receive_frame` 耗时突增，优先查源流 GOP/IDR、解码器线程和丢参考帧；若 decode 正常但 render 等待/丢帧，优先修 A/V sync 和 burst recovery 策略。
+9. **谨慎调阈值**: 只有在确认不是 decode 阻塞后，再调整 50ms drop 阈值、burst recovery 和 `delay` 上限。当前不建议先扩队列或先放宽阈值。
 
 #### P3 — 音频链路验证
 
-8. **确认音频欠载性质**: 对比 video stall 时间窗与 `audioUnderrun` 时间窗，判断音频是被同一 stall 拖垮，还是 AudioWorker / RingBuffer 独立生产不足。
-9. **音频验收**: 目标是在本地 RTSP 场景下 10 分钟运行 `audioUnderrun` 接近 0，或能明确指出欠载来自上游 stall。
+10. **确认音频欠载性质**: 对比 video stall 时间窗与 `audioUnderrun` 时间窗，判断音频是被同一 stall 拖垮，还是 AudioWorker / RingBuffer 独立生产不足。
+11. **音频验收**: 目标是在本地 RTSP 场景下 10 分钟运行 `audioUnderrun` 接近 0，或能明确指出欠载来自上游 stall。
 
 #### P4 — Release 稳定性矩阵
 
-10. **30 分钟连续播放**: 观察长期漂移、内存增长、keyframe drop 是否失控、paint interval 是否持续稳定。
-11. **Reconnect 验证**: 手动断流/恢复，验证 `Recovering → Reconnecting → Playing`、serial 丢弃旧帧、音视频队列清理。
-12. **窗口与关闭路径**: 验证 resize/fullscreen、ESC/q 退出、关闭时线程 join 与日志关闭顺序。
+12. **30 分钟连续播放**: 观察长期漂移、内存增长、keyframe drop 是否失控、paint interval 是否持续稳定。
+13. **Reconnect 验证**: 手动断流/恢复，验证 `Recovering → Reconnecting → Playing`、serial 丢弃旧帧、音视频队列清理。
+14. **窗口与关闭路径**: 验证 resize/fullscreen、ESC/q 退出、关闭时线程 join 与日志关闭顺序。
 
 ### 6.3 建议执行顺序
 
 ```
-Phase 0: 修正日志与埋点
-  → Phase 1: 启动同步，消除启动丢帧
-  → Phase 2: 用新日志定位 30s/50s 周期性卡顿
-  → Phase 3: 分离音频欠载是症状还是独立 bug
-  → Phase 4: 30 分钟 Release 验证 + Reconnect/窗口/关闭矩阵
+修复统计口径/数据竞争 → 标记队列来源 → 再做音频队列参数实验 → 30 分钟复测
 ```
 
-**下一步建议**: 先做 Phase 0 + Phase 1。不要先继续调大队列或放宽丢帧阈值，因为当前 Release 已经是视频队列 1000ms、FrameQueue 8-slot，盲调参数无法解释现有尖峰。
+**下一步建议**: 先做 P1.5 数据可信度修复（修复统计口径/数据竞争 → 标记队列来源），再做音频队列参数实验（80ms→200ms，30 分钟复测）。不要先继续调大队列或放宽丢帧阈值，因为当前 Release 已经是视频队列 1000ms、FrameQueue 8-slot，盲调参数无法解释现有尖峰。
 
 ---
 

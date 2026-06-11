@@ -4,6 +4,7 @@
 #include "VideoFrameQueue.h"
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,8 @@ public:
     void stop();
     void join();
 
+    bool isReady() const { return m_ready.load(std::memory_order_acquire); }
+
 private:
     void run();
 
@@ -39,5 +42,6 @@ private:
 
     std::atomic<bool>  m_abort{false};
     std::atomic<int>   m_serial{0};
+    std::atomic<bool>  m_ready{false};
     std::thread        m_thread;
 };

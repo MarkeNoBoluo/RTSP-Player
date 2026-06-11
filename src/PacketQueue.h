@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <atomic>
+#include <string>
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,7 +21,7 @@ public:
     PacketQueue();
     ~PacketQueue();
 
-    void init(AVRational timeBase, int capacityMs = 200);
+    void init(AVRational timeBase, int capacityMs = 200, const char* name = "");
     bool push(AVPacket* pkt, int serial = 0);
     bool pop(AVPacket* pkt, int timeoutMs);
     void flush();
@@ -30,6 +31,11 @@ public:
 
     // Returns true if a key frame was dropped since last check (clears flag)
     bool checkKeyFrameDropped();
+
+    // Thread-safe: locks, reads peak values, resets to 0
+    void drainPeak(int& outDurationMs, int& outSize);
+
+    const char* name() const { return m_name.c_str(); }
 
 private:
     struct PacketNode {
@@ -41,6 +47,7 @@ private:
     bool    m_initialized = false;
     int     m_capacityMs  = 200;
     double  m_timeBaseUs  = 0.0;
+    std::string m_name;
 
     std::deque<PacketNode> m_queue;
     std::mutex             m_mutex;
@@ -48,4 +55,6 @@ private:
     std::atomic<bool>       m_abort{false};
     std::atomic<bool>       m_keyFrameDropped{false};
     int64_t                 m_totalDurationUs = 0;
+    int                     m_peakDurationMs = 0;
+    int                     m_peakSize = 0;
 };

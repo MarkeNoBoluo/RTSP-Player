@@ -32,7 +32,11 @@ void PlayerStats::writeCsvRow() {
     if (!m_csvHeaderWritten) {
         csvWrite("session,elapsed_s,decoded,rendered,dropped,"
                  "latenessAvg,latenessMax,skipBurst,reconnects,reconnectMs,"
-                 "audioUnderrun,audioOverrun,vQueuePeak,aQueuePeak,"
+                 "audioUnderrun,audioOverrun,vQueuePeakMs,vQueuePeakPkts,aQueuePeakMs,"
+                 "decodeSendUsMax,decodeReceiveUsMax,decodeErrors,"
+                 "fqWriteFail,fqOverwrites,"
+                 "aPktRecv,aFrmDec,aBytesWrit,"
+                 "aRingFill,aRingEmpty,aRingBlocked,"
                  "paintIntvAvg,paintIntvMax,paintLatAvg,paintLatMax,frameId");
         m_csvHeaderWritten = true;
     }
@@ -47,8 +51,20 @@ void PlayerStats::writeCsvRow() {
     int64_t recMs = totalReconnectMs.load();
     int au = audioUnderruns.load();
     int ao = audioOverruns.load();
-    int vq = videoQueuePeakMs.load();
-    int aq = audioQueuePeakMs.load();
+    int vqMs = videoQueuePeakMs.load();
+    int vqPk = videoQueuePeakPkts.load();
+    int aqMs = audioQueuePeakMs.load();
+    int64_t dsMax = decodeSendUsMax.load();
+    int64_t drMax = decodeReceiveUsMax.load();
+    int deErr = decodeErrorCount.load();
+    int fqFail = frameQueueWriteFailures.load();
+    int fqOver = frameQueueOverwrites.load();
+    int64_t aPkt = audioPacketsReceived.load();
+    int64_t aFrm = audioFramesDecoded.load();
+    int64_t aBytes = audioBytesWritten.load();
+    int aFill = audioRingFillBytes.load();
+    int aEmpty = audioRingReadEmpty.load();
+    int aBlocked = audioRingWriteBlocked.load();
     uint64_t fid = frameId.load();
 
     int64_t pivAvg = 0, pivMax = 0;
@@ -73,7 +89,11 @@ void PlayerStats::writeCsvRow() {
        << lat << ',' << latMax << ',' << burst << ','
        << rec << ',' << recMs << ','
        << au << ',' << ao << ','
-       << vq << ',' << aq << ','
+       << vqMs << ',' << vqPk << ',' << aqMs << ','
+       << dsMax << ',' << drMax << ',' << deErr << ','
+        << fqFail << ',' << fqOver << ','
+       << aPkt << ',' << aFrm << ',' << aBytes << ','
+       << aFill << ',' << aEmpty << ',' << aBlocked << ','
        << pivAvg << ',' << pivMax << ','
        << plAvg << ',' << plMax << ','
        << fid;
@@ -84,9 +104,18 @@ void PlayerStats::writeCsvRow() {
     maxLatenessUs = 0;
     renderSkipBurst = 0;
     videoQueuePeakMs = 0;
+    videoQueuePeakPkts = 0;
     audioQueuePeakMs = 0;
+    decodeSendUsMax = 0;
+    decodeReceiveUsMax = 0;
+    decodeErrorCount = 0;
+    frameQueueWriteFailures = 0;
+    frameQueueOverwrites = 0;
     audioUnderruns = 0;
     audioOverruns = 0;
+    audioRingFillBytes = 0;
+    audioRingReadEmpty = 0;
+    audioRingWriteBlocked = 0;
     paintIntervalMinUs.store(0);
     paintIntervalMaxUs.store(0);
     paintIntervalSumUs.store(0);

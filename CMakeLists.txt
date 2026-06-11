@@ -18,6 +18,7 @@ find_library(AVFORMAT_LIBRARY  avformat  PATHS ${FFMPEG_LIBRARY_DIRS} REQUIRED N
 find_library(AVCODEC_LIBRARY   avcodec   PATHS ${FFMPEG_LIBRARY_DIRS} REQUIRED NO_DEFAULT_PATH)
 find_library(AVUTIL_LIBRARY    avutil    PATHS ${FFMPEG_LIBRARY_DIRS} REQUIRED NO_DEFAULT_PATH)
 find_library(SWRESAMPLE_LIBRARY swresample PATHS ${FFMPEG_LIBRARY_DIRS} REQUIRED NO_DEFAULT_PATH)
+find_library(SWSCALE_LIBRARY swscale PATHS ${FFMPEG_LIBRARY_DIRS} REQUIRED NO_DEFAULT_PATH)
 
 set(SOURCES
     src/main.cpp
@@ -57,6 +58,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${AVCODEC_LIBRARY}
     ${AVUTIL_LIBRARY}
     ${SWRESAMPLE_LIBRARY}
+    ${SWSCALE_LIBRARY}
     winmm
 )
 
@@ -67,5 +69,6 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     "${FFMPEG_ROOT}/bin/avformat-58.dll"
     "${FFMPEG_ROOT}/bin/avutil-56.dll"
     "${FFMPEG_ROOT}/bin/swresample-3.dll"
+    "${FFMPEG_ROOT}/bin/swscale-5.dll"
     "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
 )
