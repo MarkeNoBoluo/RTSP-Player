@@ -25,6 +25,9 @@ SDLRenderer::SDLRenderer(const char* title, int w, int h)
 
     m_renderer = SDL_CreateRenderer(m_window, -1,
                                     SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    // 无效
+    // m_renderer = SDL_CreateRenderer(m_window, -1,
+    //                             SDL_RENDERER_ACCELERATED );                                
     if (!m_renderer) {
         LOG_ERROR("SDL_CreateRenderer failed: %s", SDL_GetError());
         return;

@@ -44,7 +44,10 @@ private:
     IRenderer*              m_renderer = nullptr;
     StreamLifecycleManager* m_lifecycle;
 
-    int64_t m_consecutiveDrops = 0;
-    int64_t m_lastRenderUs    = 0;
-    bool    m_inVideoRefresh   = false;   // reentrancy guard
+    double   m_frameTimer       = 0.0;
+    double   m_frameLastPts     = 0.0;
+    int64_t  m_lastDropUs       = 0;
+    int      m_frameTimerSerial  = -1;
+    int64_t  m_lastRenderUs     = 0;
+    bool     m_inVideoRefresh   = false;
 };

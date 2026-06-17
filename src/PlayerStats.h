@@ -34,6 +34,7 @@ public:
     // FrameQueue
     std::atomic<int>     frameQueueWriteFailures{0};
     std::atomic<int>     frameQueueOverwrites{0};
+    std::atomic<int>     frameQueuePeakSlots{0};
 
     // Audio real counters
     std::atomic<int64_t> audioPacketsReceived{0};
@@ -57,6 +58,12 @@ public:
 
     // Monotonic frame ID
     std::atomic<uint64_t> frameId{1};
+
+    // First-frame timestamps (us, av_gettime_relative)
+    std::atomic<int64_t> videoFirstDecodeUs{0};
+    std::atomic<int64_t> videoFirstRenderUs{0};
+    std::atomic<int64_t> audioFirstDecodeUs{0};
+    std::atomic<int64_t> audioFirstPlayUs{0};
 
     // Cross-thread timing
     std::atomic<int64_t> lastCommitUs{0};

@@ -12,6 +12,7 @@ __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
 #include "AVClock.h"
 #include "StreamLifecycleManager.h"
 #include "logger/Logger.h"
+#include <time.h>
 
 extern "C" {
 #include <libavutil/log.h>
@@ -65,13 +66,30 @@ int main(int argc, char* argv[]) {
     player.setErrorCallback([](const char* msg) {
         LOG_ERROR("Error: %s", msg);
     });
+    
+    // 获取当前时间戳（自1970年1月1日以来的秒数）
+    time_t now = time(0);
+    // 使用strftime函数+localtime 将时间戳转换为自定义格式的日期字符串
+    char format_time[256];
+    strftime(format_time, sizeof(format_time), "%Y_%m_%d", localtime(&now));
+    LOG_INFO("Current date and time: %s", format_time);
 
-    // const char* url = "rtsp://127.0.0.1:25544/2026_06_10";
-    const char* url = "rtsp://192.168.42.116:25544/2026_06_11";
-    if (argc > 1) url = argv[1];
+    const char* baseUrl = "rtsp://192.168.42.116:25544/";
+    // 创建足够大的字符数组存储最终URL
+    char defaultUrl[512];  // 足够大的缓冲区
+    // 先复制基础URL
+    strcpy(defaultUrl, baseUrl);
+    // 将日期追加到URL后面
+    strcat(defaultUrl, format_time);
 
-    LOG_INFO("Open: %s", url);
-    player.open(url);
+    LOG_INFO("Full URL: %s", defaultUrl);  // 输出: rtsp://192.168.42.116:25544/2026_06_13
+
+    if (argc > 1) {
+        strcpy(defaultUrl, argv[1]);
+    }
+
+    LOG_INFO("Open: %s", defaultUrl);
+    player.open(defaultUrl);
 
     // Stats CSV timer: writes every 5 seconds via SDL_USEREVENT
     SDL_AddTimer(5000, onStatsTimer, player.stats());

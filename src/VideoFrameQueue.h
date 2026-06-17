@@ -9,8 +9,7 @@ class PlayerStats;
 
 class VideoFrameQueue {
 public:
-    static constexpr int kSlotCount = 8;
-
+    static constexpr int kSlotCount = 24;  // ~800ms buffer at 30fps, absorbs bursty decode
     VideoFrameQueue();
     ~VideoFrameQueue();
 

@@ -30,42 +30,53 @@ void PlayerStats::writeCsvRow() {
     if (!m_csvFile.is_open()) return;
 
     if (!m_csvHeaderWritten) {
-        csvWrite("session,elapsed_s,decoded,rendered,dropped,"
-                 "latenessAvg,latenessMax,skipBurst,reconnects,reconnectMs,"
-                 "audioUnderrun,audioOverrun,vQueuePeakMs,vQueuePeakPkts,aQueuePeakMs,"
-                 "decodeSendUsMax,decodeReceiveUsMax,decodeErrors,"
-                 "fqWriteFail,fqOverwrites,"
-                 "aPktRecv,aFrmDec,aBytesWrit,"
-                 "aRingFill,aRingEmpty,aRingBlocked,"
-                 "paintIntvAvg,paintIntvMax,paintLatAvg,paintLatMax,frameId");
+        csvWrite("session,elapsed_s,"
+                 "vFrmDec,vFrmRend,vFrmDrop,vDropRate_pct,"
+                 "aPktIn,aFrmDec,aBytesWrit,"
+                 "vQPeakMs,vQPeakPkt,aQPeakMs,"
+                 "latAvgMs,latMaxMs,skipBurst,"
+                 "vDecSendMaxUs,vDecRecvMaxUs,vDecErr,"
+                 "fqFail,fqOverwrt,fqPeakSlots,"
+                 "aUnder,aOver,aRingFillB,aRingEmptyN,aRingBlockN,"
+                 "rndIntvAvgMs,rndIntvMaxMs,rndLatAvgMs,rndLatMaxMs,"
+                 "reconn,reconMs,"
+                 "v1stDecUs,v1stRendUs,a1stDecUs,a1stPlayUs,"
+                 "frameId");
         m_csvHeaderWritten = true;
     }
 
-    int64_t dec = framesDecoded.load();
-    int64_t ren = framesRendered.load();
-    int64_t drp = framesDropped.load();
-    int64_t lat = lastLatenessUs.load() / 1000;
-    int64_t latMax = maxLatenessUs.load() / 1000;
-    int64_t burst = renderSkipBurst.load();
-    int rec = reconnectCount.load();
-    int64_t recMs = totalReconnectMs.load();
-    int au = audioUnderruns.load();
-    int ao = audioOverruns.load();
-    int vqMs = videoQueuePeakMs.load();
-    int vqPk = videoQueuePeakPkts.load();
-    int aqMs = audioQueuePeakMs.load();
-    int64_t dsMax = decodeSendUsMax.load();
-    int64_t drMax = decodeReceiveUsMax.load();
-    int deErr = decodeErrorCount.load();
-    int fqFail = frameQueueWriteFailures.load();
-    int fqOver = frameQueueOverwrites.load();
-    int64_t aPkt = audioPacketsReceived.load();
-    int64_t aFrm = audioFramesDecoded.load();
+    int64_t dec   = framesDecoded.load();
+    int64_t ren   = framesRendered.load();
+    int64_t drp   = framesDropped.load();
+    int   dropPct = (dec > 0) ? (int)(drp * 100 / dec) : 0;
+
+    int64_t aPkt   = audioPacketsReceived.load();
+    int64_t aFrm   = audioFramesDecoded.load();
     int64_t aBytes = audioBytesWritten.load();
-    int aFill = audioRingFillBytes.load();
-    int aEmpty = audioRingReadEmpty.load();
-    int aBlocked = audioRingWriteBlocked.load();
-    uint64_t fid = frameId.load();
+
+    // exchange(0) atomically reads and resets, eliminating the race window
+    // between the old load() + later =0 that lost increments from other threads
+    int vqMs  = videoQueuePeakMs.exchange(0);
+    int vqPk  = videoQueuePeakPkts.exchange(0);
+    int aqMs  = audioQueuePeakMs.exchange(0);
+
+    int64_t lat    = lastLatenessUs.load() / 1000;  // not reset; carries over
+    int64_t latMax = maxLatenessUs.exchange(0) / 1000;
+    int64_t burst  = renderSkipBurst.exchange(0);
+
+    int64_t dsMax = decodeSendUsMax.exchange(0);
+    int64_t drMax = decodeReceiveUsMax.exchange(0);
+    int     deErr = decodeErrorCount.exchange(0);
+
+    int fqFail = frameQueueWriteFailures.exchange(0);
+    int fqOver = frameQueueOverwrites.exchange(0);
+    int fqPeak = frameQueuePeakSlots.exchange(0);
+
+    int au    = audioUnderruns.exchange(0);
+    int ao    = audioOverruns.exchange(0);
+    int aFill = audioRingFillBytes.exchange(0);
+    int aEmpt = audioRingReadEmpty.exchange(0);
+    int aBlk  = audioRingWriteBlocked.exchange(0);
 
     int64_t pivAvg = 0, pivMax = 0;
     int pc = paintIntervalCount.load();
@@ -80,42 +91,36 @@ void PlayerStats::writeCsvRow() {
         plMax = paintLatencyMaxUs.load() / 1000;
     }
 
-    // elapsed seconds since epoch (for relative time computation)
-    int64_t elapsed = static_cast<int64_t>(time(nullptr));
+    int     rec   = reconnectCount.load();
+    int64_t recMs = totalReconnectMs.load();
+
+    int64_t vfdUs = videoFirstDecodeUs.load();
+    int64_t vfrUs = videoFirstRenderUs.load();
+    int64_t afdUs = audioFirstDecodeUs.load();
+    int64_t afpUs = audioFirstPlayUs.load();
+
+    uint64_t fid  = frameId.load();
+    int64_t  elap = static_cast<int64_t>(time(nullptr));
 
     std::ostringstream ss;
-    ss << m_sessionId << ',' << elapsed << ','
-       << dec << ',' << ren << ',' << drp << ','
-       << lat << ',' << latMax << ',' << burst << ','
-       << rec << ',' << recMs << ','
-       << au << ',' << ao << ','
-       << vqMs << ',' << vqPk << ',' << aqMs << ','
-       << dsMax << ',' << drMax << ',' << deErr << ','
-        << fqFail << ',' << fqOver << ','
+    ss << m_sessionId << ',' << elap << ','
+       << dec << ',' << ren << ',' << drp << ',' << dropPct << ','
        << aPkt << ',' << aFrm << ',' << aBytes << ','
-       << aFill << ',' << aEmpty << ',' << aBlocked << ','
+       << vqMs << ',' << vqPk << ',' << aqMs << ','
+       << lat << ',' << latMax << ',' << burst << ','
+       << dsMax << ',' << drMax << ',' << deErr << ','
+       << fqFail << ',' << fqOver << ',' << fqPeak << ','
+       << au << ',' << ao << ',' << aFill << ',' << aEmpt << ',' << aBlk << ','
        << pivAvg << ',' << pivMax << ','
        << plAvg << ',' << plMax << ','
+       << rec << ',' << recMs << ','
+       << vfdUs << ',' << vfrUs << ',' << afdUs << ',' << afpUs << ','
        << fid;
 
     csvWrite(ss.str());
 
-    // Reset spikes for next interval
-    maxLatenessUs = 0;
-    renderSkipBurst = 0;
-    videoQueuePeakMs = 0;
-    videoQueuePeakPkts = 0;
-    audioQueuePeakMs = 0;
-    decodeSendUsMax = 0;
-    decodeReceiveUsMax = 0;
-    decodeErrorCount = 0;
-    frameQueueWriteFailures = 0;
-    frameQueueOverwrites = 0;
-    audioUnderruns = 0;
-    audioOverruns = 0;
-    audioRingFillBytes = 0;
-    audioRingReadEmpty = 0;
-    audioRingWriteBlocked = 0;
+    // Reset remaining per-interval accumulators
+    // (all above counters were atomically read-and-cleared via exchange(0))
     paintIntervalMinUs.store(0);
     paintIntervalMaxUs.store(0);
     paintIntervalSumUs.store(0);

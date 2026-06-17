@@ -46,3 +46,6 @@
 - Indent: 4 spaces. Source encoding: UTF-8 with BOM — enforced by `target_compile_options(... /utf-8)` in `CMakeLists.txt:47`.
 - `src/test_qt.cpp` is a standalone smoke test, **NOT** in `CMakeLists.txt` SOURCES — don't add it to the build; don't remove it (it documents Qt bring-up).
 - Design docs live in `docs/superpowers/specs/`; phase plans in `docs/superpowers/plans/`. The lock-free design doc (`2026-06-08-lock-free-render-pipeline-design.md`) and the `2026-06-08-rtsp-player-design.md` spec describe intent — code in `src/` is the source of truth where they disagree (e.g. 4 slots vs spec's 3).
+
+## Tips
+- update [progress file](docs/RTSP-Player-Progress-Activity.md) ,when we execute a plan.

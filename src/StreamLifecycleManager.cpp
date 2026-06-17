@@ -128,9 +128,9 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     m_fmtCtx->interrupt_callback = intrCb;
 
     AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "rtsp_transport", "tcp", 0);
-    av_dict_set(&opts, "probesize", "5000000", 0);
-    av_dict_set(&opts, "analyzeduration", "5000000", 0);
+    av_dict_set(&opts, "rtsp_transport", "udp", 0);
+    av_dict_set(&opts, "probesize", "32000", 0);
+    av_dict_set(&opts, "analyzeduration", "0", 0);
     av_dict_set(&opts, "max_delay", "100000", 0);
 
     int ret = avformat_open_input(&m_fmtCtx, url, nullptr, &opts);
@@ -176,7 +176,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_videoStream   = m_fmtCtx->streams[videoIdx];
         m_videoCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_videoCodecPar, m_videoStream->codecpar);
-        m_videoQueue->init(m_videoStream->time_base, 1000, "video");
+        m_videoQueue->init(m_videoStream->time_base, m_videoQueueCapacityMs, "video");
         LOG_INFO("Video stream: index=%d, codec=%d, %dx%d",
                  videoIdx, m_videoCodecPar->codec_id,
                  m_videoCodecPar->width, m_videoCodecPar->height);

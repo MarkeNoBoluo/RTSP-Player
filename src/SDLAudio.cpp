@@ -7,6 +7,10 @@
 #include <SDL.h>
 #include <cstring>
 
+extern "C" {
+#include <libavutil/time.h>
+}
+
 SDLAudio::SDLAudio(AudioRingBuffer* ringBuffer, AVClock* clock, PlayerStats* stats)
     : m_ringBuffer(ringBuffer)
     , m_clock(clock)
@@ -71,6 +75,12 @@ void SDLAudio::sdlCallback(void* userdata, unsigned char* stream, int len) {
     }
 
     if (read > 0) {
+        {
+            int64_t expectedZero = 0;
+            self->m_stats->audioFirstPlayUs.compare_exchange_strong(
+                expectedZero, av_gettime_relative(),
+                std::memory_order_release, std::memory_order_acquire);
+        }
         self->m_currentPts = pts;
         self->m_chunkConsumed = chunkOffset;
         double audioClock = pts + (double)chunkOffset

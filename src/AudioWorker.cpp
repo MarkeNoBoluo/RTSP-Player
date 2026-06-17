@@ -214,6 +214,10 @@ void AudioWorker::run() {
             }
 
             if (framesDecoded == 1) {
+                int64_t expectedZero = 0;
+                m_stats->audioFirstDecodeUs.compare_exchange_strong(
+                    expectedZero, av_gettime_relative(),
+                    std::memory_order_release, std::memory_order_acquire);
                 LOG_INFO("Audio started: first %d bytes", actualSize);
             }
 

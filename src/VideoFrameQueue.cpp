@@ -21,6 +21,14 @@ VideoFrameQueue::~VideoFrameQueue() {
 }
 
 bool VideoFrameQueue::writeFrame(AVFrame* srcFrame, int64_t pts, int serial, PlayerStats* stats) {
+    // Validate source frame — count malformed frames as write failures
+    if (!srcFrame || !srcFrame->data[0] || srcFrame->width <= 0 || srcFrame->height <= 0) {
+        if (stats) {
+            stats->frameQueueWriteFailures.fetch_add(1, std::memory_order_relaxed);
+        }
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(m_mutex);
 
     if (m_count.load(std::memory_order_relaxed) >= kSlotCount) {
@@ -28,6 +36,7 @@ bool VideoFrameQueue::writeFrame(AVFrame* srcFrame, int64_t pts, int serial, Pla
         m_count.fetch_sub(1, std::memory_order_relaxed);
         if (stats) {
             stats->frameQueueOverwrites.fetch_add(1, std::memory_order_relaxed);
+            stats->framesDropped.fetch_add(1, std::memory_order_relaxed);
         }
         LOG_DEBUG("VideoFrameQueue overwrite: replacing oldest pending frame");
     }
