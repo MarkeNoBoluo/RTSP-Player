@@ -9,19 +9,15 @@ int64_t AVClock::nowUs() const {
 }
 
 void AVClock::setVideoClock(double pts) {
-    m_videoPts.store(pts, std::memory_order_release);
-    m_videoSysTime.store(nowUs(), std::memory_order_release);
+    std::lock_guard<std::mutex> lock(m_videoMutex);
+    m_videoPts = pts;
+    m_videoSysTime = nowUs();
     m_videoReady.store(true, std::memory_order_release);
 }
 
 ClockPoint AVClock::videoClock() const {
-    for (;;) {
-        int64_t sys1 = m_videoSysTime.load(std::memory_order_acquire);
-        double pts = m_videoPts.load(std::memory_order_acquire);
-        int64_t sys2 = m_videoSysTime.load(std::memory_order_acquire);
-        if (sys1 == sys2)
-            return { pts, sys1 };
-    }
+    std::lock_guard<std::mutex> lock(m_videoMutex);
+    return { m_videoPts, m_videoSysTime };
 }
 
 bool AVClock::isReady() const {
@@ -29,22 +25,19 @@ bool AVClock::isReady() const {
 }
 
 void AVClock::setAudioClock(double pts) {
-    m_audioPts.store(pts, std::memory_order_release);
-    m_audioSysTime.store(nowUs(), std::memory_order_release);
+    std::lock_guard<std::mutex> lock(m_audioMutex);
+    m_audioPts = pts;
+    m_audioSysTime = nowUs();
 }
 
 bool AVClock::hasAudio() const {
-    return m_audioSysTime.load(std::memory_order_acquire) > 0;
+    std::lock_guard<std::mutex> lock(m_audioMutex);
+    return m_audioSysTime > 0;
 }
 
 ClockPoint AVClock::audioClock() const {
-    for (;;) {
-        int64_t sys1 = m_audioSysTime.load(std::memory_order_acquire);
-        double pts = m_audioPts.load(std::memory_order_acquire);
-        int64_t sys2 = m_audioSysTime.load(std::memory_order_acquire);
-        if (sys1 == sys2)
-            return { pts, sys1 };
-    }
+    std::lock_guard<std::mutex> lock(m_audioMutex);
+    return { m_audioPts, m_audioSysTime };
 }
 
 double AVClock::drift() const {
@@ -54,9 +47,15 @@ double AVClock::drift() const {
 }
 
 void AVClock::reset() {
-    m_videoPts.store(0.0);
-    m_videoSysTime.store(0);
-    m_videoReady.store(false);
-    m_audioPts.store(0.0);
-    m_audioSysTime.store(0);
+    {
+        std::lock_guard<std::mutex> lock(m_videoMutex);
+        m_videoPts = 0.0;
+        m_videoSysTime = 0;
+    }
+    m_videoReady.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(m_audioMutex);
+        m_audioPts = 0.0;
+        m_audioSysTime = 0;
+    }
 }

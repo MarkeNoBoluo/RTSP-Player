@@ -138,6 +138,7 @@ void AudioWorker::run() {
         int newSerial = m_serial.load(std::memory_order_acquire);
         if (newSerial != curSerial) {
             curSerial = newSerial;
+            m_syntheticPtsValid = false;
             avcodec_flush_buffers(m_codecCtx);
             if (m_swrCtx) {
                 swr_free(&m_swrCtx);
@@ -196,9 +197,24 @@ void AudioWorker::run() {
             //     m_dataSize += actualSize;
             // }
 
-            int64_t pts = frame->pts;
+            // PTS fallback: best_effort_timestamp → pts → pkt_dts → synthetic
+            int64_t pts = frame->best_effort_timestamp;
+            if (pts == AV_NOPTS_VALUE) pts = frame->pts;
             if (pts == AV_NOPTS_VALUE) pts = frame->pkt_dts;
-            double ptsSec = (pts != AV_NOPTS_VALUE) ? pts * av_q2d(m_timeBase) : 0.0;
+
+            double ptsSec;
+            if (pts != AV_NOPTS_VALUE) {
+                ptsSec = pts * av_q2d(m_timeBase);
+                if (ptsSec < 0.0) ptsSec = 0.0;
+                m_syntheticAudioPts = ptsSec;
+                m_syntheticPtsValid = true;
+            } else if (m_syntheticPtsValid) {
+                double durationSec = (double)converted / kTargetRate;
+                m_syntheticAudioPts += durationSec;
+                ptsSec = m_syntheticAudioPts;
+            } else {
+                ptsSec = 0.0;
+            }
 
             if (m_ringBuffer) {
                 m_ringBuffer->write(dstBuf, actualSize, ptsSec, curSerial);

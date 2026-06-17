@@ -20,9 +20,15 @@ public:
     ~AudioRingBuffer();
 
     void setStats(PlayerStats* stats) { m_stats = stats; }
+    void setAudioParams(int sampleRate, int bytesPerFrame) {
+        m_sampleRate = sampleRate;
+        m_bytesPerFrame = bytesPerFrame;
+    }
 
     bool write(const uint8_t* data, int len, double pts, int serial);
     int  read(uint8_t* dst, int len, double* outPts, int* outChunkOffset);
+    // Returns accurate end-PTS accounting for partial chunk reads
+    int  read(uint8_t* dst, int len, double* outClockPts);
     void flush();
     void abort();
     int  serial() const { return m_serial.load(); }
@@ -53,6 +59,9 @@ private:
 
     PlayerStats* m_stats = nullptr;
     std::atomic<bool> m_abort{false};
+
+    int m_sampleRate    = 48000;
+    int m_bytesPerFrame = 4;    // stereo s16: 2ch × 2bytes
 
     std::atomic<int> m_readEmptyCount{0};
     std::atomic<int> m_writeBlockCount{0};

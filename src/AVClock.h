@@ -2,6 +2,7 @@
 
 #include "Common.h"
 #include <atomic>
+#include <mutex>
 
 class AVClock {
 public:
@@ -19,10 +20,12 @@ public:
 private:
     int64_t nowUs() const;
 
-    std::atomic<double>  m_videoPts{0.0};
-    std::atomic<int64_t> m_videoSysTime{0};
-    std::atomic<bool>    m_videoReady{false};
+    mutable std::mutex m_videoMutex;
+    double     m_videoPts = 0.0;
+    int64_t    m_videoSysTime = 0;
+    std::atomic<bool> m_videoReady{false};
 
-    std::atomic<double>  m_audioPts{0.0};
-    std::atomic<int64_t> m_audioSysTime{0};
+    mutable std::mutex m_audioMutex;
+    double     m_audioPts = 0.0;
+    int64_t    m_audioSysTime = 0;
 };

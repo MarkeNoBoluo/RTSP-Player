@@ -23,9 +23,6 @@ SDLAudio::~SDLAudio() {
 }
 
 bool SDLAudio::init(int sampleRate, int channels) {
-    m_sampleRate = sampleRate;
-    m_channels   = channels;
-
     SDL_AudioSpec desired;
     SDL_zero(desired);
     desired.freq     = sampleRate;
@@ -43,8 +40,18 @@ bool SDLAudio::init(int sampleRate, int channels) {
         return false;
     }
 
-    LOG_INFO("SDL audio opened: %dHz/%dch fmt=%d samples=%d",
-             obtained.freq, obtained.channels, obtained.format, obtained.samples);
+    // Use actual obtained hardware params for clock calculations
+    m_sampleRate    = obtained.freq;
+    m_channels      = obtained.channels;
+    m_bytesPerFrame = (SDL_AUDIO_BITSIZE(obtained.format) / 8) * obtained.channels;
+
+    if (m_ringBuffer) {
+        m_ringBuffer->setAudioParams(m_sampleRate, m_bytesPerFrame);
+    }
+
+    LOG_INFO("SDL audio opened: %dHz/%dch fmt=%d samples=%d bytesPerFrame=%d",
+             obtained.freq, obtained.channels, obtained.format, obtained.samples,
+             m_bytesPerFrame);
     return true;
 }
 
@@ -66,9 +73,8 @@ void SDLAudio::close() {
 void SDLAudio::sdlCallback(void* userdata, unsigned char* stream, int len) {
     auto* self = static_cast<SDLAudio*>(userdata);
 
-    double pts = 0.0;
-    int chunkOffset = 0;
-    int read = self->m_ringBuffer->read(stream, len, &pts, &chunkOffset);
+    double audioClock = 0.0;
+    int read = self->m_ringBuffer->read(stream, len, &audioClock);
 
     if (read < len) {
         memset(stream + read, 0, len - read);
@@ -81,10 +87,6 @@ void SDLAudio::sdlCallback(void* userdata, unsigned char* stream, int len) {
                 expectedZero, av_gettime_relative(),
                 std::memory_order_release, std::memory_order_acquire);
         }
-        self->m_currentPts = pts;
-        self->m_chunkConsumed = chunkOffset;
-        double audioClock = pts + (double)chunkOffset
-            / (self->m_sampleRate * self->m_bytesPerFrame);
         self->m_clock->setAudioClock(audioClock);
     }
 }

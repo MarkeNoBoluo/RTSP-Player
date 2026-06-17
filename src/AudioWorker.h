@@ -55,6 +55,9 @@ private:
     std::atomic<int>   m_serial{0};
     std::thread        m_thread;
 
+    double m_syntheticAudioPts = 0.0;
+    bool   m_syntheticPtsValid = false;
+
     static constexpr int kTargetRate     = 48000;
     static constexpr int kTargetChannels = 2;
     static constexpr int kTargetFormat   = AV_SAMPLE_FMT_S16;

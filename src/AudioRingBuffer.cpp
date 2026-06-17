@@ -87,6 +87,54 @@ int AudioRingBuffer::read(uint8_t* dst, int len, double* outPts, int* outChunkOf
     return filled;
 }
 
+int AudioRingBuffer::read(uint8_t* dst, int len, double* outClockPts) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    int filled = 0;
+    double actualStartPts = 0.0;
+    bool haveStartPts = false;
+    double bytesPerSec = (double)m_sampleRate * m_bytesPerFrame;
+
+    while (filled < len) {
+        if (m_avail <= 0) {
+            m_readEmptyCount.fetch_add(1, std::memory_order_relaxed);
+            if (m_stats) m_stats->audioUnderruns++;
+            break;
+        }
+
+        Chunk& chunk = m_chunks[m_readIdx];
+        int remaining = chunk.len - m_readOffset;
+        int toCopy = std::min(len - filled, remaining);
+
+        if (!haveStartPts) {
+            // Start PTS = chunk.pts + offset within chunk (in seconds)
+            actualStartPts = chunk.pts + (double)m_readOffset / bytesPerSec;
+            haveStartPts = true;
+        }
+
+        memcpy(dst + filled, chunk.data + m_readOffset, toCopy);
+        m_readOffset += toCopy;
+        filled += toCopy;
+
+        if (m_readOffset >= chunk.len) {
+            delete[] chunk.data;
+            chunk.data = nullptr;
+            chunk.len  = 0;
+            m_readIdx  = (m_readIdx + 1) % kMaxChunks;
+            m_readOffset = 0;
+            m_avail--;
+        }
+    }
+
+    if (outClockPts && haveStartPts) {
+        // End PTS = actual start + duration of data consumed
+        *outClockPts = actualStartPts + (double)filled / bytesPerSec;
+    }
+
+    m_cv.notify_one();
+    return filled;
+}
+
 void AudioRingBuffer::flush() {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (int i = 0; i < kMaxChunks; i++) {
