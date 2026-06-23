@@ -33,7 +33,6 @@ StreamLifecycleManager::StreamLifecycleManager(
     , m_clock(clock)
     ,m_audioEnabled(true)
 {
-    m_stats->initCsv("stats.csv");
 }
 
 StreamLifecycleManager::~StreamLifecycleManager() {
@@ -128,7 +127,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     m_fmtCtx->interrupt_callback = intrCb;
 
     AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "rtsp_transport", "udp", 0);
+    av_dict_set(&opts, "rtsp_transport", m_transport.c_str(), 0);
     av_dict_set(&opts, "probesize", "32000", 0);
     av_dict_set(&opts, "analyzeduration", "0", 0);
     av_dict_set(&opts, "max_delay", "100000", 0);
@@ -457,4 +456,10 @@ void StreamLifecycleManager::incrementSerial() {
     if (m_decodeThread) m_decodeThread->setSerial(s);
     if (m_audioWorker && m_audioEnabled) m_audioWorker->setSerial(s);
     if (m_audioRingBuffer && m_audioEnabled) m_audioRingBuffer->setSerial(s);
+}
+
+void StreamLifecycleManager::setTransport(const char* transport) {
+    if (transport && transport[0]) {
+        m_transport = transport;
+    }
 }

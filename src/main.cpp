@@ -12,6 +12,8 @@ __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
 #include "AVClock.h"
 #include "StreamLifecycleManager.h"
 #include "logger/Logger.h"
+#include <cstdlib>
+#include <cstring>
 #include <time.h>
 
 extern "C" {
@@ -37,9 +39,130 @@ static Uint32 onStatsTimer(Uint32 interval, void* param) {
     return interval; // repeating timer
 }
 
+static void printHelp(const char* prog) {
+    fprintf(stderr,
+        "Usage: %s --url <rtsp_url> [options]\n"
+        "\n"
+        "Required:\n"
+        "  --url <rtsp_url>          RTSP stream URL\n"
+        "\n"
+        "Options:\n"
+        "  --help                    Show this help and exit\n"
+        "  --log <path>              Log file path (default: rtsp_player.log)\n"
+        "  --csv <path>              CSV stats path (default: rtsp_player_stats.csv)\n"
+        "  --no-csv                  Disable CSV stats\n"
+        "  --fullscreen              Start in fullscreen mode\n"
+        "  --windowed                Start in windowed mode (default)\n"
+        "  --transport <tcp|udp>     RTSP transport protocol (default: udp)\n"
+        "  --title <string>          Window title (default: \"RTSP Player\")\n"
+        "  --exit-after <seconds>    Auto-exit after N seconds\n"
+        "\n"
+        "Examples:\n"
+        "  %s --url rtsp://192.168.1.100:554/stream\n"
+        "  %s --url rtsp://... --transport tcp --fullscreen\n"
+        "  %s --url rtsp://... --csv my_stats.csv --log my.log --exit-after 60\n"
+        "\n"
+        "Note: The old positional-argument form (url log) is still accepted but deprecated.\n"
+        , prog, prog, prog, prog);
+}
+
 int main(int argc, char* argv[]) {
-    const char* logPath = "rtsp_player.log";
-    if (argc > 2) logPath = argv[2];
+    // ── Parse command-line arguments ──────────────────────────────
+    const char* rtspUrl     = nullptr;
+    const char* logPath     = "rtsp_player.log";
+    const char* winTitle    = "RTSP Player";
+    const char* transport   = "udp";
+    bool        fullscreen  = false;
+    double      exitAfterSec = 0.0;
+    const char* csvPath     = "rtsp_player_stats.csv";   // CSV enabled by default
+    bool        csvExplicit  = false;   // true if --csv or --no-csv explicitly set
+    bool        deprecatedPos = false;
+    int         positional   = 0;
+
+    for (int i = 1; i < argc; ++i) {
+        // ── Known flags (no value) ──────────────────────────────
+        if (std::strcmp(argv[i], "--help") == 0) {
+            printHelp(argv[0]);
+            return 0;
+        }
+        if (std::strcmp(argv[i], "--fullscreen") == 0) {
+            fullscreen = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--windowed") == 0) {
+            fullscreen = false;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--no-csv") == 0) {
+            csvPath = nullptr;
+            csvExplicit = true;
+            continue;
+        }
+
+        // ── Known options (require a value) ─────────────────────
+        auto requireValue = [&](const char* opt) -> const char* {
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                fprintf(stderr, "Error: %s requires a value\n\n", opt);
+                printHelp(argv[0]);
+                std::exit(1);
+            }
+            return argv[++i];
+        };
+
+        if (std::strcmp(argv[i], "--url") == 0) {
+            rtspUrl = requireValue("--url");
+        } else if (std::strcmp(argv[i], "--log") == 0) {
+            logPath = requireValue("--log");
+        } else if (std::strcmp(argv[i], "--csv") == 0) {
+            // --csv with optional path; if no path follows, use default name
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                csvPath = argv[++i];
+            } else {
+                csvPath = "rtsp_player_stats.csv";
+            }
+            csvExplicit = true;
+        } else if (std::strcmp(argv[i], "--transport") == 0) {
+            const char* v = requireValue("--transport");
+            if (std::strcmp(v, "udp") != 0 && std::strcmp(v, "tcp") != 0) {
+                fprintf(stderr, "Error: --transport must be 'udp' or 'tcp', got '%s'\n\n", v);
+                printHelp(argv[0]);
+                std::exit(1);
+            }
+            transport = v;
+        } else if (std::strcmp(argv[i], "--title") == 0) {
+            winTitle = requireValue("--title");
+        } else if (std::strcmp(argv[i], "--exit-after") == 0) {
+            const char* v = requireValue("--exit-after");
+            char* end = nullptr;
+            exitAfterSec = std::strtod(v, &end);
+            if (end == v || *end != '\0' || exitAfterSec <= 0.0) {
+                fprintf(stderr, "Error: --exit-after requires a positive number, got '%s'\n\n", v);
+                printHelp(argv[0]);
+                std::exit(1);
+            }
+        } else if (argv[i][0] == '-') {
+            // Unknown flag
+            fprintf(stderr, "Error: unknown option '%s'\n\n", argv[i]);
+            printHelp(argv[0]);
+            std::exit(1);
+        } else {
+            // Positional argument (deprecated)
+            if (!deprecatedPos) {
+                deprecatedPos = true;
+                fprintf(stderr, "WARNING: Positional arguments are deprecated; use --url and --log instead\n");
+            }
+            switch (positional++) {
+            case 0: rtspUrl = argv[i]; break;
+            case 1: logPath = argv[i]; break;
+            default:
+                fprintf(stderr, "Error: too many positional arguments\n\n");
+                printHelp(argv[0]);
+                std::exit(1);
+            }
+        }
+    }
+
+    // ── Init logger ───────────────────────────────────────────────
     logger::Logger::instance().initLogFile(logPath);
     atexit([]() { logger::Logger::instance().closeLogFile(); });
 
@@ -48,6 +171,7 @@ int main(int argc, char* argv[]) {
     av_log_set_level(AV_LOG_DEBUG);
     av_log_set_callback(ffmpegLogCallback);
 
+    // ── Init SDL ──────────────────────────────────────────────────
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) < 0) {
         LOG_ERROR("SDL_Init failed: %s", SDL_GetError());
         return 1;
@@ -55,10 +179,27 @@ int main(int argc, char* argv[]) {
 
     timeBeginPeriod(1);
 
-    SDLRenderer renderer("RTSP Player", 1280, 720);
+    // ── Create renderer ───────────────────────────────────────────
+    SDLRenderer renderer(winTitle, 1920, 1080, fullscreen);
 
+    // ── Build default URL if none provided ────────────────────────
+    char defaultUrl[512];
+    if (!rtspUrl) {
+        time_t now = time(0);
+        char format_time[256];
+        strftime(format_time, sizeof(format_time), "%Y_%m_%d", localtime(&now));
+
+        const char* baseUrl = "rtsp://192.168.42.116:25544/";
+        strcpy(defaultUrl, baseUrl);
+        strcat(defaultUrl, format_time);
+        rtspUrl = defaultUrl;
+        LOG_INFO("No URL provided, using default: %s", rtspUrl);
+    }
+
+    // ── Create player ─────────────────────────────────────────────
     RTSPlayer player;
     player.setRenderer(&renderer);
+    player.setTransport(transport);
     player.setStateCallback([](PlayerState state) {
         const char* names[] = {"Stopped","Connecting","Playing","Recovering","Reconnecting","Error","Closing"};
         LOG_INFO("State: %s", names[(int)state]);
@@ -66,45 +207,56 @@ int main(int argc, char* argv[]) {
     player.setErrorCallback([](const char* msg) {
         LOG_ERROR("Error: %s", msg);
     });
-    
-    // 获取当前时间戳（自1970年1月1日以来的秒数）
-    time_t now = time(0);
-    // 使用strftime函数+localtime 将时间戳转换为自定义格式的日期字符串
-    char format_time[256];
-    strftime(format_time, sizeof(format_time), "%Y_%m_%d", localtime(&now));
-    LOG_INFO("Current date and time: %s", format_time);
-
-    const char* baseUrl = "rtsp://192.168.42.116:25544/";
-    // 创建足够大的字符数组存储最终URL
-    char defaultUrl[512];  // 足够大的缓冲区
-    // 先复制基础URL
-    strcpy(defaultUrl, baseUrl);
-    // 将日期追加到URL后面
-    strcat(defaultUrl, format_time);
-
-    LOG_INFO("Full URL: %s", defaultUrl);  // 输出: rtsp://192.168.42.116:25544/2026_06_13
-
-    if (argc > 1) {
-        strcpy(defaultUrl, argv[1]);
-    }
-
-    LOG_INFO("Open: %s", defaultUrl);
-    player.open(defaultUrl);
-
-    // Stats CSV timer: writes every 5 seconds via SDL_USEREVENT
-    SDL_AddTimer(5000, onStatsTimer, player.stats());
 
     bool running = true;
+    auto requestExit = [&](const char* reason) {
+        if (!running) return;
+        LOG_INFO("Exit requested: %s", reason);
+        running = false;
+    };
+
+    // ── Print effective configuration ─────────────────────────────
+    {
+        char exitBuf[32] = "never";
+        if (exitAfterSec > 0.0) snprintf(exitBuf, sizeof(exitBuf), "%.1fs", exitAfterSec);
+        LOG_INFO("=== Effective Configuration ===");
+        LOG_INFO("  URL:        %s", rtspUrl);
+        LOG_INFO("  Log:        %s", logPath);
+        LOG_INFO("  CSV:        %s", csvPath ? csvPath : "(disabled)");
+        LOG_INFO("  Transport:  %s", transport);
+        LOG_INFO("  Fullscreen: %s", fullscreen ? "yes" : "no");
+        LOG_INFO("  Exit after: %s", exitBuf);
+        LOG_INFO("===============================");
+    }
+    if (!player.open(rtspUrl)) {
+        requestExit("open failed");
+    }
+
+    // Stats CSV timer: writes every 5 seconds via SDL_USEREVENT
+    SDL_TimerID statsTimerId = 0;
+    if (running && csvPath) {
+        player.stats()->initCsv(csvPath);
+        statsTimerId = SDL_AddTimer(5000, onStatsTimer, player.stats());
+        LOG_INFO("CSV stats enabled: %s", csvPath);
+    }
+
+    int64_t exitDeadlineUs = 0;
+    if (exitAfterSec > 0.0) {
+        exitDeadlineUs = av_gettime_relative()
+            + static_cast<int64_t>(exitAfterSec * AV_TIME_BASE);
+        LOG_INFO("Auto exit enabled: %.3f seconds", exitAfterSec);
+    }
+
     while (running) {
         SDL_Event event;
-        while (SDL_PollEvent(&event)) {
+        while (running && SDL_PollEvent(&event)) {
             switch (event.type) {
             case SDL_QUIT:
-                running = false;
+                requestExit("SDL_QUIT");
                 break;
             case SDL_KEYDOWN:
                 if (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q)
-                    running = false;
+                    requestExit("keyboard");
                 else if (event.key.keysym.sym == SDLK_f) {
                     Uint32 flags = SDL_GetWindowFlags(renderer.window());
                     SDL_SetWindowFullscreen(renderer.window(),
@@ -128,6 +280,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (exitDeadlineUs > 0 && av_gettime_relative() >= exitDeadlineUs) {
+            requestExit("exit-after reached");
+            break;
+        }
+
         int64_t beforeUs = av_gettime_relative();
         player.videoRefresh();
         int64_t elapsedUs = av_gettime_relative() - beforeUs;
@@ -135,6 +292,14 @@ int main(int argc, char* argv[]) {
         if (sleepUs > 100) {
             av_usleep((unsigned)sleepUs);
         }
+    }
+
+    if (statsTimerId) {
+        SDL_RemoveTimer(statsTimerId);
+        statsTimerId = 0;
+    }
+    if (csvPath) {
+        player.stats()->closeCsv();
     }
 
     player.close();

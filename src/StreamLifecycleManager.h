@@ -40,6 +40,8 @@ public:
     bool open(const char* url);
     void close();
 
+    void setTransport(const char* transport);
+
     PlayerStats* stats()    const { return m_stats; }
     PlayerState  state()    const;
 
@@ -89,6 +91,7 @@ private:
 
     std::atomic<uint64_t> m_generation{1};
     std::string           m_url;
+    std::string           m_transport{"udp"};
 
     StateCallback m_onState;
     ErrorCallback m_onError;

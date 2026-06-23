@@ -18,7 +18,7 @@ public:
 
 class SDLRenderer : public IRenderer {
 public:
-    SDLRenderer(const char* title, int w, int h);
+    SDLRenderer(const char* title, int w, int h, bool fullscreen = false);
     ~SDLRenderer() override;
 
     bool init(int width, int height) override;

@@ -46,6 +46,8 @@ void VideoDecodeThread::run() {
     AVFrame*  frame = av_frame_alloc();
 
     int timeoutCount = 0;
+    bool wasStalled = false;
+    int64_t stallBeginUs = 0;
     int curSerial = m_serial.load(std::memory_order_acquire);
 
     int64_t sendWallUs = 0, receiveWallUs = 0;
@@ -59,6 +61,12 @@ void VideoDecodeThread::run() {
             timeoutCount++;
             if (timeoutCount <= 5) {
                 LOG_DEBUG("VideoDecode: pop timeout #%d", timeoutCount);
+            }
+            if (timeoutCount == 10 && !wasStalled) {
+                wasStalled = true;
+                stallBeginUs = av_gettime_relative();
+                m_stats->videoPopTimeouts++;
+                LOG_INFO("VideoDecode: video stall begin (10 consecutive pop timeouts)");
             }
             if (timeoutCount == 30) {
                 LOG_INFO("VideoDecode: queue empty, flushing decoder");
@@ -80,6 +88,14 @@ void VideoDecodeThread::run() {
             continue;
         }
 
+        if (wasStalled && timeoutCount >= 10) {
+            int64_t stallDurationMs = (av_gettime_relative() - stallBeginUs) / 1000;
+            LOG_INFO("VideoDecode: video stall end — %d consecutive timeouts, duration=%lldms",
+                     timeoutCount, (long long)stallDurationMs);
+            m_stats->videoStallCount++;
+            wasStalled = false;
+            stallBeginUs = 0;
+        }
         timeoutCount = 0;
 
         int newSerial = m_serial.load(std::memory_order_acquire);

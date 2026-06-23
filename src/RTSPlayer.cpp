@@ -72,6 +72,10 @@ void RTSPlayer::setErrorCallback(ErrorCallback cb) {
     m_lifecycle->setErrorCallback(std::move(cb));
 }
 
+void RTSPlayer::setTransport(const char* transport) {
+    m_lifecycle->setTransport(transport);
+}
+
 int RTSPlayer::pktSerial() const {
     return m_lifecycle->pktSerial();
 }
@@ -83,7 +87,7 @@ void RTSPlayer::videoRefresh() {
 
     constexpr double DEFAULT_FRAME_DURATION   = 0.033;
     constexpr double SYNC_THRESHOLD           = 0.040;
-    constexpr double DIFF_BOUND               = 0.500;
+    constexpr double MAX_AUDIO_LAG_FOR_QUEUE  = 0.250;
     constexpr int64_t DROP_THRESHOLD_US       = 50000;
     constexpr int64_t MIN_DROP_INTERVAL_US    = 33000;
 
@@ -123,9 +127,6 @@ void RTSPlayer::videoRefresh() {
         double nowSec = nowUs / (double)AV_TIME_BASE;
         double framePtsSec = pts / (double)AV_TIME_BASE;
 
-        auto vc = m_clock->videoClock();
-        double videoClockNow = vc.pts + (nowUs - vc.systemTime) / (double)AV_TIME_BASE;
-
         // 4. PTS gap between frames (diagnostic only, not used for pacing)
         double ptsGap = DEFAULT_FRAME_DURATION;
         if (m_frameLastPts > 0.0) {
@@ -138,27 +139,84 @@ void RTSPlayer::videoRefresh() {
         bool bHasAudio = m_clock->hasAudio();
 
         if (bHasAudio) {
+            auto vc = m_clock->videoClock();
             auto ac = m_clock->audioClock();
+            double videoClockNow = vc.pts + (nowUs - vc.systemTime) / (double)AV_TIME_BASE;
             double audioClockNow = ac.pts + (nowUs - ac.systemTime) / (double)AV_TIME_BASE;
-            double avDiff = videoClockNow - audioClockNow;
+            double avDiff = framePtsSec - audioClockNow;
 
-            if (std::abs(avDiff) < DIFF_BOUND) {
-                if (avDiff > SYNC_THRESHOLD) {
-                    targetDelay = std::min(0.050, DEFAULT_FRAME_DURATION + SYNC_THRESHOLD);
-                } else if (avDiff < -SYNC_THRESHOLD) {
-                    targetDelay = 0.010;
+            if (avDiff < -MAX_AUDIO_LAG_FOR_QUEUE) {
+                if (m_frameQueue->count() > 1) {
+                    // Normal catch-up: drop queued frames to skip ahead
+                    int dropped = 0;
+                    while (m_frameQueue->count() > 1 && avDiff < -MAX_AUDIO_LAG_FOR_QUEUE) {
+                        m_frameQueue->discardAndAdvance();
+                        m_stats->framesDropped++;
+                        m_stats->catchUpDrops++;
+                        dropped++;
+
+                        pts = m_frameQueue->peekDisplayPts();
+                        if (pts < 0) return;
+                        framePtsSec = pts / (double)AV_TIME_BASE;
+                        avDiff = framePtsSec - audioClockNow;
+                    }
+
+                    if (dropped > 0) {
+                        m_frameTimer = nowSec;
+                        m_lastDropUs = nowUs;
+
+                        if (m_frameLastPts > 0.0) {
+                            double d = framePtsSec - m_frameLastPts;
+                            ptsGap = d > 0.0 ? d : DEFAULT_FRAME_DURATION;
+                        }
+
+                        static int64_t s_lastCatchUpLogUs = 0;
+                        if (nowUs - s_lastCatchUpLogUs > 1000000) {
+                            LOG_INFO("Catch-up drop: dropped=%d frameAudDiff=%.3f pts=%.3f aud=%.3f queue=%d",
+                                     dropped, avDiff, framePtsSec, audioClockNow, m_frameQueue->count());
+                            s_lastCatchUpLogUs = nowUs;
+                        }
+                    }
+                } else if (m_frameQueue->count() == 1) {
+                    // Fast catch-up: only 1 frame, can't drop — unpaced rendering
+                    if (!m_fastCatchUp) {
+                        m_fastCatchUp = true;
+                        m_fastCatchUpFrameCount = 0;
+                        LOG_INFO("Fast catch-up mode ON: frameAudDiff=%.3f queue=%d",
+                                 avDiff, m_frameQueue->count());
+                    }
                 }
+            } else if (m_fastCatchUp && avDiff >= -SYNC_THRESHOLD) {
+                // Exit fast catch-up once back in sync
+                LOG_INFO("Fast catch-up mode OFF: caught up in %d frames, frameAudDiff=%.3f",
+                         m_fastCatchUpFrameCount, avDiff);
+                m_fastCatchUp = false;
+                m_fastCatchUpFrameCount = 0;
             }
 
-            if (targetDelay < 0.010) targetDelay = 0.010;
+            if (avDiff > SYNC_THRESHOLD) {
+                targetDelay = std::min(0.050, DEFAULT_FRAME_DURATION + SYNC_THRESHOLD);
+            } else if (avDiff < -SYNC_THRESHOLD) {
+                targetDelay = m_fastCatchUp ? 0.001 : 0.010;
+            } else if (m_fastCatchUp) {
+                // Still catching up but within ±40ms — keep minimal delay
+                targetDelay = 0.005;
+            }
+
+            if (targetDelay < 0.010) targetDelay = m_fastCatchUp ? 0.001 : 0.010;
             if (targetDelay > 0.100) targetDelay = 0.100;
+
+            // Write per-interval metrics for CSV
+            m_stats->frameAudDiffMs.store(static_cast<int64_t>(avDiff * 1000), std::memory_order_relaxed);
+            m_stats->clockDiffMs.store(static_cast<int64_t>((videoClockNow - audioClockNow) * 1000), std::memory_order_relaxed);
 
             static int64_t s_lastAvDiffLogUs = 0;
             int64_t nowUsForLog = av_gettime_relative();
             auto rn = m_stats->framesRendered.load();
             if (rn <= 3 || nowUsForLog - s_lastAvDiffLogUs > 1000000) {
-                LOG_INFO("avDiff=%.3f vid=%.3f aud=%.3f pts=%.3f gap=%.3f delay=%.3f",
-                         avDiff, videoClockNow, audioClockNow, framePtsSec, ptsGap, targetDelay);
+                LOG_INFO("frameAudDiff=%.3f clockDiff=%.3f vid=%.3f aud=%.3f pts=%.3f gap=%.3f delay=%.3f",
+                         avDiff, videoClockNow - audioClockNow, videoClockNow,
+                         audioClockNow, framePtsSec, ptsGap, targetDelay);
                 if (rn > 3) s_lastAvDiffLogUs = nowUsForLog;
             }
         } else {
@@ -253,6 +311,10 @@ render:
         m_stats->framesRendered++;
         m_stats->frameId++;
         m_frameLastPts = framePtsSec;
+
+        if (m_fastCatchUp) {
+            m_fastCatchUpFrameCount++;
+        }
 
         int64_t renderNowUs = av_gettime_relative();
         double presentNow = renderNowUs / (double)AV_TIME_BASE;

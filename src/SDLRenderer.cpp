@@ -9,15 +9,20 @@ extern "C" {
 #include <libavutil/imgutils.h>
 }
 
-SDLRenderer::SDLRenderer(const char* title, int w, int h)
+SDLRenderer::SDLRenderer(const char* title, int w, int h, bool fullscreen)
     : m_title(title)
     , m_winW(w)
     , m_winH(h)
 {
+    Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN;
+    if (fullscreen) {
+        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    }
+
     m_window = SDL_CreateWindow(title,
-                                SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                 w, h,
-                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+                                flags);
     if (!m_window) {
         LOG_ERROR("SDL_CreateWindow failed: %s", SDL_GetError());
         return;
@@ -25,13 +30,15 @@ SDLRenderer::SDLRenderer(const char* title, int w, int h)
 
     m_renderer = SDL_CreateRenderer(m_window, -1,
                                     SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    // 无效
-    // m_renderer = SDL_CreateRenderer(m_window, -1,
-    //                             SDL_RENDERER_ACCELERATED );                                
     if (!m_renderer) {
         LOG_ERROR("SDL_CreateRenderer failed: %s", SDL_GetError());
         return;
     }
+
+    // 启动后立即清黑一帧，避免白屏
+    SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(m_renderer);
+    SDL_RenderPresent(m_renderer);
 
     SDL_RendererInfo rinfo;
     if (SDL_GetRendererInfo(m_renderer, &rinfo) == 0) {
@@ -39,7 +46,7 @@ SDLRenderer::SDLRenderer(const char* title, int w, int h)
                  rinfo.max_texture_width, rinfo.max_texture_height);
     }
 
-    LOG_INFO("SDL renderer created: %dx%d", w, h);
+    LOG_INFO("SDL renderer created: %dx%d fullscreen=%d", w, h, fullscreen);
 }
 
 SDLRenderer::~SDLRenderer() {

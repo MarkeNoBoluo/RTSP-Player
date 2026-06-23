@@ -36,6 +36,13 @@ public:
     std::atomic<int>     frameQueueOverwrites{0};
     std::atomic<int>     frameQueuePeakSlots{0};
 
+    // Stutter / stall diagnostics
+    std::atomic<int>     videoPopTimeouts{0};     // decode pop timeout bursts (consecutive)
+    std::atomic<int>     catchUpDrops{0};         // frames dropped in catch-up logic
+    std::atomic<int>     videoStallCount{0};      // number of stall events (long pop timeouts)
+    std::atomic<int64_t> frameAudDiffMs{0};       // last frame-audio diff (ms)
+    std::atomic<int64_t> clockDiffMs{0};          // last clock diff (ms)
+
     // Audio real counters
     std::atomic<int64_t> audioPacketsReceived{0};
     std::atomic<int64_t> audioFramesDecoded{0};

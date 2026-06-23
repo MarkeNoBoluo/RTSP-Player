@@ -41,7 +41,8 @@ void PlayerStats::writeCsvRow() {
                  "rndIntvAvgMs,rndIntvMaxMs,rndLatAvgMs,rndLatMaxMs,"
                  "reconn,reconMs,"
                  "v1stDecUs,v1stRendUs,a1stDecUs,a1stPlayUs,"
-                 "frameId");
+                 "frameId,"
+                 "vPopTO,catDrop,vStall,audDiffMs,clkDiffMs");
         m_csvHeaderWritten = true;
     }
 
@@ -99,6 +100,12 @@ void PlayerStats::writeCsvRow() {
     int64_t afdUs = audioFirstDecodeUs.load();
     int64_t afpUs = audioFirstPlayUs.load();
 
+    int vpt = videoPopTimeouts.exchange(0);
+    int cdr = catchUpDrops.exchange(0);
+    int vst = videoStallCount.exchange(0);
+    int64_t adm = frameAudDiffMs.exchange(0);
+    int64_t cdm = clockDiffMs.exchange(0);
+
     uint64_t fid  = frameId.load();
     int64_t  elap = static_cast<int64_t>(time(nullptr));
 
@@ -115,7 +122,8 @@ void PlayerStats::writeCsvRow() {
        << plAvg << ',' << plMax << ','
        << rec << ',' << recMs << ','
        << vfdUs << ',' << vfrUs << ',' << afdUs << ',' << afpUs << ','
-       << fid;
+       << fid << ','
+       << vpt << ',' << cdr << ',' << vst << ',' << adm << ',' << cdm;
 
     csvWrite(ss.str());
 
