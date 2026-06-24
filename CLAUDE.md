@@ -9,12 +9,12 @@ cmake -S . -B build
 cmake --build build --config Release   # or Debug
 ```
 
-- **Compiler**: MSVC 2017, C++17, x86, `/utf-8`, `/SAFESEH:NO`
-- **Output**: `bin/MSVC2017_x86_<Config>/RTSP-Player.exe`
+- **Compiler**: MSVC 2017, C++17, `/utf-8`; x86 or x64 auto-detected by CMake (`CMAKE_SIZEOF_VOID_P`). `/SAFESEH:NO` is x86-only.
+- **Output**: `bin/MSVC2017_${ARCH}_<Config>/RTSP-Player.exe`
 - **Working dir at runtime**: the output directory (DLLs are copied there via POST_BUILD)
 
 ```bash
-cd bin/MSVC2017_x86_Release
+cd bin/MSVC2017_x86_Release   # or bin/MSVC2017_x64_Release
 ./RTSP-Player.exe --url rtsp://192.168.1.100:554/stream
 ```
 
@@ -30,6 +30,9 @@ cd bin/MSVC2017_x86_Release
 --transport <tcp|udp>     RTSP transport protocol (default: udp)
 --title <string>          Window title (default: "RTSP Player")
 --exit-after <seconds>    Auto-exit after N seconds
+--no-audio               Disable audio stream processing (video-only, lowest latency)
+--setpts-zero            Low-latency mode: video-only bypass if audio absent,
+                         or reduced A+V queue depths (~300ms target)
 --help                    Show help
 ```
 
@@ -67,6 +70,18 @@ main()
 
 A generation counter (`m_pktSerial`, `m_generation`) is incremented on reconnect and propagated to every queue and worker. All stale packets/frames with an older serial are discarded, ensuring clean pipeline restart without flushing complexity.
 
+### Low-latency modes
+
+Two latency profiles, set via `StreamLifecycleManager` parameters:
+
+| Mode | Trigger | Video queue | Audio queue | Ring buffer | Target latency |
+|------|---------|-------------|-------------|-------------|----------------|
+| Normal | default | 200ms | default | default | ~500-800ms |
+| Low-latency A+V | `--setpts-zero` (has audio) | 33ms | 66ms | 60ms | ~300ms |
+| Low-latency video-only | `--setpts-zero` (no audio) or `--no-audio` | 33ms | — | — | ~1 frame |
+
+In video-only `--setpts-zero` mode, the render loop drains all but the latest frame before each render, and uses `m_frameTimer = nowSec` (unpaced rendering). The RTSPlayer `m_setptsZero` / `m_lowLatency` flags gate both the queue capacity selection and the render-loop pacing path.
+
 ### AVClock & sync
 
 `AVClock` stores `(pts, systemTime)` pairs for video and audio independently:
@@ -76,16 +91,23 @@ A generation counter (`m_pktSerial`, `m_generation`) is incremented on reconnect
 
 ### Render loop (videoRefresh)
 
-1. Peek `VideoFrameQueue` display slot
-2. If serial mismatch → discard and advance
-3. If frame is late (pts < audio clock by threshold) → drop
-4. If frame is early (pts ahead of audio by large margin) → sleep
-5. Otherwise → `SDLRenderer::displayFrame()` (swscale to NV12, SDL_UpdateYUVTexture, SDL_RenderCopy)
-6. Update `AVClock` video PTS, increment render stats
+1. Drain frames with stale serial
+2. If `--setpts-zero` and no audio: drain all but latest frame (ASAP rendering)
+3. Read display-slot PTS; if negative, return
+4. If clock not ready: render immediately (first frame)
+5. Compute `avDiff = framePts - audioClock`:
+   - If far behind (`< -maxAudioLagForQueue`): drop frames from queue to catch up (normal mode: 250ms threshold; low-latency: 80ms)
+   - If only 1 frame remains and still behind: enter **fast catch-up** mode (unpaced rendering, `targetDelay = 0.001s`)
+   - If ahead (`> SYNC_THRESHOLD`): stretch delay slightly
+6. Wait gate: sleep if `targetTime - nowSec > 1ms` (capped at 20ms), then return without rendering
+7. Single-frame lateness drop if overdue by `>DROP_THRESHOLD_US` (50ms) and min drop interval elapsed
+8. Render via `SDLRenderer::displayFrame()` (swscale → NV12 → SDL_UpdateYUVTexture → SDL_RenderCopy)
+9. Update `AVClock` video PTS, advance display slot, update stats
 
 ## FFmpeg Usage
 
-- **Version**: bundled 4.2.9 in `3rd/FFmpeg/`
+- **x86**: FFmpeg 4.2.x dev libs (`3rd/FFmpeg/x86/`), DLLs: avcodec-58, avformat-58, avutil-56, swresample-3, swscale-5
+- **x64**: FFmpeg 5+ dev libs (`3rd/FFmpeg/x64/`), DLLs: avcodec-61, avformat-61, avutil-59, swresample-5, swscale-8
 - **Headers must be wrapped** in `extern "C" {}` blocks
 - `av_log_set_callback(ffmpegLogCallback)` registered in `main.cpp`, routes FFmpeg log messages to `logger::Logger`
 
@@ -116,7 +138,9 @@ Thread-safe via internal `std::mutex`. Log format: `[LEVEL] file.cpp:123 msg`.
 ```
 3rd/
  ├── SDL2/          — SDL2 development libraries (x86)
- └── FFmpeg/        — FFmpeg 4.2.9 dev libraries (x86)
+ └── FFmpeg/
+      ├── x86/       — FFmpeg 4.2.x (avcodec-58, avformat-58, ...)
+      └── x64/       — FFmpeg 5+   (avcodec-61, avformat-61, ...)
 src/
  ├── main.cpp       — entry point, CLI parsing, SDL init, main event loop
  ├── RTSPlayer.*    — facade: videoRefresh, frame timing, sync logic
