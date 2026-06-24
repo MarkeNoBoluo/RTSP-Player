@@ -76,6 +76,15 @@ void RTSPlayer::setTransport(const char* transport) {
     m_lifecycle->setTransport(transport);
 }
 
+void RTSPlayer::setAudioEnabled(bool v) {
+    m_lifecycle->setAudioEnabled(v);
+}
+
+void RTSPlayer::setSetptsZero(bool v) {
+    m_setptsZero = v;
+    m_lifecycle->setSetptsZero(v);
+}
+
 int RTSPlayer::pktSerial() const {
     return m_lifecycle->pktSerial();
 }
@@ -110,6 +119,27 @@ void RTSPlayer::videoRefresh() {
     }
 
     if (!m_frameQueue->hasNewFrame()) return;
+
+    if (m_setptsZero && !m_clock->hasAudio()) {
+        int dropped = 0;
+        while (m_frameQueue->count() > 1) {
+            m_frameQueue->discardAndAdvance();
+            m_stats->framesDropped++;
+            m_stats->catchUpDrops++;
+            dropped++;
+        }
+
+        if (dropped > 0) {
+            m_frameTimer = 0.0;
+            m_lastDropUs = av_gettime_relative();
+            static int64_t s_lastSetptsDropLogUs = 0;
+            if (m_lastDropUs - s_lastSetptsDropLogUs > 1000000) {
+                LOG_INFO("Setpts-zero drop: dropped=%d queue=%d",
+                         dropped, m_frameQueue->count());
+                s_lastSetptsDropLogUs = m_lastDropUs;
+            }
+        }
+    }
 
     int64_t pts = m_frameQueue->peekDisplayPts();
     if (pts < 0) return;
@@ -220,12 +250,18 @@ void RTSPlayer::videoRefresh() {
                 if (rn > 3) s_lastAvDiffLogUs = nowUsForLog;
             }
         } else {
-            if (targetDelay < 0.010) targetDelay = 0.010;
-            if (targetDelay > 0.100) targetDelay = 0.100;
+            if (m_setptsZero) {
+                targetDelay = 0.001;
+            } else {
+                if (targetDelay < 0.010) targetDelay = 0.010;
+                if (targetDelay > 0.100) targetDelay = 0.100;
+            }
         }
 
         // 6. frameTimer init / re-anchor (compute targetTime, don't advance yet)
-        if (m_frameTimer <= 0.0 || m_frameTimer < nowSec - 1.0) {
+        if (m_setptsZero && !bHasAudio) {
+            targetTime = nowSec;
+        } else if (m_frameTimer <= 0.0 || m_frameTimer < nowSec - 1.0) {
             targetTime = nowSec + targetDelay;
         } else if (nowSec - m_frameTimer > 0.1) {
             targetTime = nowSec;
@@ -319,7 +355,9 @@ render:
         int64_t renderNowUs = av_gettime_relative();
         double presentNow = renderNowUs / (double)AV_TIME_BASE;
 
-        if (m_frameTimer <= 0.0)
+        if (m_setptsZero && !m_clock->hasAudio())
+            m_frameTimer = presentNow;
+        else if (m_frameTimer <= 0.0)
             m_frameTimer = presentNow + DEFAULT_FRAME_DURATION;
         else
             m_frameTimer = targetTime;

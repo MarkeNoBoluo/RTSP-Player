@@ -7,10 +7,10 @@
 #include <windows.h>
 #endif
 
-void PlayerStats::initCsv(const std::string& path) {
+bool PlayerStats::initCsv(const std::string& path) {
     std::lock_guard<std::mutex> lock(m_csvMutex);
     m_csvFile.open(path, std::ios::app);
-    if (!m_csvFile.is_open()) return;
+    if (!m_csvFile.is_open()) return false;
 
     // session ID: YYYYMMDD_HHMMSS
     time_t now = time(nullptr);
@@ -23,6 +23,7 @@ void PlayerStats::initCsv(const std::string& path) {
     char buf[32];
     strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &t);
     m_sessionId = buf;
+    return true;
 }
 
 void PlayerStats::writeCsvRow() {

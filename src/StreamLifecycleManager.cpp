@@ -125,12 +125,15 @@ bool StreamLifecycleManager::initDemux(const char* url) {
 
     AVIOInterruptCB intrCb = { DemuxThread::interruptCallback, m_demuxThread };
     m_fmtCtx->interrupt_callback = intrCb;
+    m_fmtCtx->flags |= AVFMT_FLAG_NOBUFFER;
+    m_fmtCtx->max_delay = m_setptsZero ? 0 : 100000;
 
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "rtsp_transport", m_transport.c_str(), 0);
-    av_dict_set(&opts, "probesize", "32000", 0);
+    av_dict_set(&opts, "fflags", "nobuffer", 0);
+    av_dict_set(&opts, "probesize", m_setptsZero ? "2048" : "32000", 0);
     av_dict_set(&opts, "analyzeduration", "0", 0);
-    av_dict_set(&opts, "max_delay", "100000", 0);
+    av_dict_set(&opts, "max_delay", m_setptsZero ? "0" : "100000", 0);
 
     int ret = avformat_open_input(&m_fmtCtx, url, nullptr, &opts);
     av_dict_free(&opts);
@@ -144,7 +147,8 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     }
 
     m_fmtCtx->flags |= AVFMT_FLAG_NOBUFFER;
-    m_fmtCtx->max_analyze_duration = 5000000;
+    m_fmtCtx->max_delay = m_setptsZero ? 0 : 100000;
+    m_fmtCtx->max_analyze_duration = 0;
 
     ret = avformat_find_stream_info(m_fmtCtx, nullptr);
     if (ret < 0) {
@@ -175,7 +179,10 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_videoStream   = m_fmtCtx->streams[videoIdx];
         m_videoCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_videoCodecPar, m_videoStream->codecpar);
-        m_videoQueue->init(m_videoStream->time_base, m_videoQueueCapacityMs, "video");
+        int64_t videoQueueCapacityMs = (m_setptsZero && !m_audioEnabled)
+            ? m_lowLatencyVideoQueueCapacityMs
+            : m_videoQueueCapacityMs;
+        m_videoQueue->init(m_videoStream->time_base, static_cast<int>(videoQueueCapacityMs), "video");
         LOG_INFO("Video stream: index=%d, codec=%d, %dx%d",
                  videoIdx, m_videoCodecPar->codec_id,
                  m_videoCodecPar->width, m_videoCodecPar->height);
@@ -219,7 +226,13 @@ bool StreamLifecycleManager::initDecoders() {
         m_videoCodecCtx = avcodec_alloc_context3(codec);
         if (!m_videoCodecCtx) return false;
         avcodec_parameters_to_context(m_videoCodecCtx, m_videoCodecPar);
-        m_videoCodecCtx->thread_count = 0;
+        if (m_setptsZero && !m_audioEnabled) {
+            m_videoCodecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+            m_videoCodecCtx->thread_count = 1;
+            m_videoCodecCtx->thread_type = FF_THREAD_SLICE;
+        } else {
+            m_videoCodecCtx->thread_count = 0;
+        }
         if (avcodec_open2(m_videoCodecCtx, codec, nullptr) < 0) return false;
         LOG_INFO("Video decoder opened: %dx%d", m_videoCodecCtx->width, m_videoCodecCtx->height);
     }

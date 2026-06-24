@@ -77,7 +77,7 @@ public:
     std::atomic<int64_t> reconnectStartUs{0};
 
     // CSV
-    void initCsv(const std::string& path);
+    bool initCsv(const std::string& path);
     void writeCsvRow();
     void closeCsv();
 

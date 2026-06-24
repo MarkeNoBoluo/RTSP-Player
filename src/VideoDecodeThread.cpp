@@ -83,7 +83,7 @@ void VideoDecodeThread::run() {
                     m_frameQueue->writeFrame(frame, pts, curSerial, m_stats);
                     m_stats->framesDecoded++;
                 }
-                break;
+                avcodec_flush_buffers(m_codecCtx);
             }
             continue;
         }

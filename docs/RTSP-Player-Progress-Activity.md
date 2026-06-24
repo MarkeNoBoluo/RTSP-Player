@@ -280,3 +280,14 @@ Press [q] to stop, [?] for help
 - Investigated GPU-pusher playback freeze using `bin/MSVC2017_x86_Release/rtsp_player.log` and pusher logs.
 - Finding: after a short video packet stall, audio clock kept advancing; `videoRefresh()` used extrapolated video clock for A/V correction, so stale video frames were treated as near-sync or video-leading. The renderer then slowed to 50ms delay while `VideoFrameQueue` overwrote continuously.
 - Change: `videoRefresh()` now compares the pending frame PTS against audio clock, drops queued stale video frames when lag exceeds 250ms, and re-anchors the frame timer after catch-up drops.
+
+## 2026-06-24 Update
+
+- Investigated `--no-audio --setpts-zero` low-latency playback using `bin/MSVC2017_x64_Release/log_062313.log` and `bin/MSVC2017_x64_Release/csv_062313.csv`.
+- Finding: decode and render counts stayed aligned, but `VideoFrameQueue` peaked at 6 queued frames during stutter windows, which accounts for roughly 200ms extra latency at 30fps.
+- Change: in setpts-zero/no-audio mode, `videoRefresh()` now drops queued old video frames until only the newest frame remains, keeps the frame timer in immediate mode, and applies lower-latency FFmpeg input/decoder options (`probesize=2048`, `max_delay=0`, `fflags=nobuffer`, `AV_CODEC_FLAG_LOW_DELAY`).
+- Verification: `cmake --build build --config Release` passed after cleaning the duplicate `Path/PATH` process environment variable.
+- Follow-up test: `FrameQueue` peak dropped to 1 slot and total drop rate stayed near 2%, but `vQPeakMs` still reached 199ms. Tightened setpts-zero/no-audio video PacketQueue to 33ms and made tiny-capacity PacketQueue pushes drop immediately instead of waiting up to 100ms.
+- Follow-up test 2: `csv_062314.csv` shows `vQPeakMs=33`, `fqPeakSlots<=1`, drop rate ~1%, average render interval ~33ms, max render interval 140ms. Found a separate stall bug where `VideoDecodeThread` exited after 30 empty-queue pop timeouts; changed it to drain/flush the decoder and keep waiting for new packets.
+- Follow-up test 3: `log_062314.log` shows the decoder survived a 29-timeout stall and resumed rendering, confirming the empty-queue exit fix. The provided CSV was stale (last write 14:20 while log continued to 14:38), so CSV initialization now returns success/failure and main logs a warning instead of reporting enabled when the file cannot be opened.
+- Follow-up test 4: `csv_062314.csv` refreshed correctly through 15:01. Low-latency buffering stayed bounded (`vQPeakMs=33`, `vQPeakPkt=1`, `fqPeakSlots=1`) with average render interval 34.57ms and max render latency 37ms. The only 3015ms render interval matched a real upstream/demux stall and reconnect path (`vStall=1`, `vPopTO=1`), not local queue buildup.

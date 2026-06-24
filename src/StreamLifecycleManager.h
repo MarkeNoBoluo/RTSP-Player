@@ -41,6 +41,9 @@ public:
     void close();
 
     void setTransport(const char* transport);
+    void setAudioEnabled(bool v) { m_audioEnabled = v; }
+    void setSetptsZero(bool v)   { m_setptsZero = v; }
+    bool setptsZero() const      { return m_setptsZero; }
 
     PlayerStats* stats()    const { return m_stats; }
     PlayerState  state()    const;
@@ -87,7 +90,9 @@ private:
     int                  m_reconnectTimerId = 0;
     int                  m_backoffCount     = 0;
     int64_t              m_videoQueueCapacityMs = 200;
+    int64_t              m_lowLatencyVideoQueueCapacityMs = 33;
     bool                 m_audioEnabled     = true;
+    bool                 m_setptsZero       = false;
 
     std::atomic<uint64_t> m_generation{1};
     std::string           m_url;

@@ -30,6 +30,8 @@ public:
     void setStateCallback(StateCallback cb);
     void setErrorCallback(ErrorCallback cb);
     void setTransport(const char* transport);
+    void setAudioEnabled(bool v);
+    void setSetptsZero(bool v);
 
     void videoRefresh();
 
@@ -52,6 +54,7 @@ private:
     int64_t  m_lastRenderUs     = 0;
     bool     m_inVideoRefresh   = false;
     bool     m_fastCatchUp      = false;
+    bool     m_setptsZero       = false;
     int      m_fastCatchUpFrameCount = 0;
     int64_t  m_videoStallBeginUs = 0;   // 0 = not in stall
 };

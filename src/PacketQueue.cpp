@@ -24,14 +24,15 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
     if (pkt->duration > 0) {
         durUs = static_cast<int64_t>(pkt->duration * m_timeBaseUs);
     }
+    bool lowLatency = (m_capacityMs <= 66);
 
     while (!m_queue.empty() && m_totalDurationUs + durUs > m_capacityMs * 1000LL) {
-        if (!m_abort) {
+        if (!m_abort && !lowLatency) {
             bool freed = m_cond.wait_for(lock, std::chrono::milliseconds(100),
                 [this, durUs] { return m_totalDurationUs + durUs <= m_capacityMs * 1000LL || m_abort; });
             if (m_abort) return false;
             if (freed) break;
-        } else {
+        } else if (m_abort) {
             return false;
         }
 

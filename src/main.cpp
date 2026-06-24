@@ -56,6 +56,8 @@ static void printHelp(const char* prog) {
         "  --transport <tcp|udp>     RTSP transport protocol (default: udp)\n"
         "  --title <string>          Window title (default: \"RTSP Player\")\n"
         "  --exit-after <seconds>    Auto-exit after N seconds\n"
+        "  --no-audio               Disable audio stream processing\n"
+        "  --setpts-zero            Pure video low-latency mode (requires --no-audio)\n"
         "\n"
         "Examples:\n"
         "  %s --url rtsp://192.168.1.100:554/stream\n"
@@ -73,6 +75,8 @@ int main(int argc, char* argv[]) {
     const char* winTitle    = "RTSP Player";
     const char* transport   = "udp";
     bool        fullscreen  = false;
+    bool        noAudio     = false;
+    bool        setptsZero  = false;
     double      exitAfterSec = 0.0;
     const char* csvPath     = "rtsp_player_stats.csv";   // CSV enabled by default
     bool        csvExplicit  = false;   // true if --csv or --no-csv explicitly set
@@ -96,6 +100,14 @@ int main(int argc, char* argv[]) {
         if (std::strcmp(argv[i], "--no-csv") == 0) {
             csvPath = nullptr;
             csvExplicit = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--no-audio") == 0) {
+            noAudio = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--setpts-zero") == 0) {
+            setptsZero = true;
             continue;
         }
 
@@ -225,9 +237,22 @@ int main(int argc, char* argv[]) {
         LOG_INFO("  CSV:        %s", csvPath ? csvPath : "(disabled)");
         LOG_INFO("  Transport:  %s", transport);
         LOG_INFO("  Fullscreen: %s", fullscreen ? "yes" : "no");
+        LOG_INFO("  Audio:      %s", noAudio ? "disabled" : "enabled");
+        LOG_INFO("  SetptsZero: %s", setptsZero ? "yes" : "no");
         LOG_INFO("  Exit after: %s", exitBuf);
         LOG_INFO("===============================");
     }
+    if (noAudio) {
+        player.setAudioEnabled(false);
+    }
+    if (setptsZero) {
+        if (!noAudio) {
+            LOG_WARN("--setpts-zero has no effect when audio is enabled; ignoring");
+        } else {
+            player.setSetptsZero(true);
+        }
+    }
+
     if (!player.open(rtspUrl)) {
         requestExit("open failed");
     }
@@ -235,9 +260,13 @@ int main(int argc, char* argv[]) {
     // Stats CSV timer: writes every 5 seconds via SDL_USEREVENT
     SDL_TimerID statsTimerId = 0;
     if (running && csvPath) {
-        player.stats()->initCsv(csvPath);
-        statsTimerId = SDL_AddTimer(5000, onStatsTimer, player.stats());
-        LOG_INFO("CSV stats enabled: %s", csvPath);
+        if (player.stats()->initCsv(csvPath)) {
+            statsTimerId = SDL_AddTimer(5000, onStatsTimer, player.stats());
+            LOG_INFO("CSV stats enabled: %s", csvPath);
+        } else {
+            LOG_WARN("CSV stats disabled: failed to open %s", csvPath);
+            csvPath = nullptr;
+        }
     }
 
     int64_t exitDeadlineUs = 0;
