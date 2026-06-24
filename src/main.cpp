@@ -57,7 +57,7 @@ static void printHelp(const char* prog) {
         "  --title <string>          Window title (default: \"RTSP Player\")\n"
         "  --exit-after <seconds>    Auto-exit after N seconds\n"
         "  --no-audio               Disable audio stream processing\n"
-        "  --setpts-zero            Pure video low-latency mode (requires --no-audio)\n"
+        "  --setpts-zero            Low-latency mode (video + audio if available)\n"
         "\n"
         "Examples:\n"
         "  %s --url rtsp://192.168.1.100:554/stream\n"
@@ -246,11 +246,7 @@ int main(int argc, char* argv[]) {
         player.setAudioEnabled(false);
     }
     if (setptsZero) {
-        if (!noAudio) {
-            LOG_WARN("--setpts-zero has no effect when audio is enabled; ignoring");
-        } else {
-            player.setSetptsZero(true);
-        }
+        player.setSetptsZero(true);
     }
 
     if (!player.open(rtspUrl)) {

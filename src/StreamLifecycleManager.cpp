@@ -126,14 +126,14 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     AVIOInterruptCB intrCb = { DemuxThread::interruptCallback, m_demuxThread };
     m_fmtCtx->interrupt_callback = intrCb;
     m_fmtCtx->flags |= AVFMT_FLAG_NOBUFFER;
-    m_fmtCtx->max_delay = m_setptsZero ? 0 : 100000;
+    m_fmtCtx->max_delay = m_lowLatency ? 0 : 100000;
 
     AVDictionary* opts = nullptr;
     av_dict_set(&opts, "rtsp_transport", m_transport.c_str(), 0);
     av_dict_set(&opts, "fflags", "nobuffer", 0);
-    av_dict_set(&opts, "probesize", m_setptsZero ? "2048" : "32000", 0);
+    av_dict_set(&opts, "probesize", m_lowLatency ? "2048" : "32000", 0);
     av_dict_set(&opts, "analyzeduration", "0", 0);
-    av_dict_set(&opts, "max_delay", m_setptsZero ? "0" : "100000", 0);
+    av_dict_set(&opts, "max_delay", m_lowLatency ? "0" : "100000", 0);
 
     int ret = avformat_open_input(&m_fmtCtx, url, nullptr, &opts);
     av_dict_free(&opts);
@@ -147,7 +147,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
     }
 
     m_fmtCtx->flags |= AVFMT_FLAG_NOBUFFER;
-    m_fmtCtx->max_delay = m_setptsZero ? 0 : 100000;
+    m_fmtCtx->max_delay = m_lowLatency ? 0 : 100000;
     m_fmtCtx->max_analyze_duration = 0;
 
     ret = avformat_find_stream_info(m_fmtCtx, nullptr);
@@ -179,7 +179,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_videoStream   = m_fmtCtx->streams[videoIdx];
         m_videoCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_videoCodecPar, m_videoStream->codecpar);
-        int64_t videoQueueCapacityMs = (m_setptsZero && !m_audioEnabled)
+        int64_t videoQueueCapacityMs = m_lowLatency
             ? m_lowLatencyVideoQueueCapacityMs
             : m_videoQueueCapacityMs;
         m_videoQueue->init(m_videoStream->time_base, static_cast<int>(videoQueueCapacityMs), "video");
@@ -192,7 +192,8 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_audioStream   = m_fmtCtx->streams[audioIdx];
         m_audioCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_audioCodecPar, m_audioStream->codecpar);
-        m_audioQueue->init(m_audioStream->time_base, 200, "audio");
+        int64_t audioQueueCapacityMs = m_lowLatency ? m_lowLatencyAudioQueueCapacityMs : 200;
+        m_audioQueue->init(m_audioStream->time_base, static_cast<int>(audioQueueCapacityMs), "audio");
 #if LIBAVUTIL_VERSION_MAJOR >= 57
         int audioChannels = m_audioCodecPar->ch_layout.nb_channels;
 #else
@@ -226,7 +227,7 @@ bool StreamLifecycleManager::initDecoders() {
         m_videoCodecCtx = avcodec_alloc_context3(codec);
         if (!m_videoCodecCtx) return false;
         avcodec_parameters_to_context(m_videoCodecCtx, m_videoCodecPar);
-        if (m_setptsZero && !m_audioEnabled) {
+        if (m_lowLatency) {
             m_videoCodecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
             m_videoCodecCtx->thread_count = 1;
             m_videoCodecCtx->thread_type = FF_THREAD_SLICE;
@@ -247,6 +248,9 @@ bool StreamLifecycleManager::initDecoders() {
         if (!m_audioCodecCtx) return false;
         avcodec_parameters_to_context(m_audioCodecCtx, m_audioCodecPar);
         m_audioCodecCtx->thread_count = 1;
+        if (m_lowLatency) {
+            m_audioCodecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+        }
         if (avcodec_open2(m_audioCodecCtx, codec, nullptr) < 0) return false;
 #if LIBAVUTIL_VERSION_MAJOR >= 57
         int decChannels = m_audioCodecCtx->ch_layout.nb_channels;
@@ -282,10 +286,11 @@ void StreamLifecycleManager::startThreads() {
 
         AVRational audioTimeBase = m_audioStream ? m_audioStream->time_base : AVRational{1, 90000};
 
-        m_audioRingBuffer = new AudioRingBuffer(100);
+        m_audioRingBuffer = new AudioRingBuffer(m_lowLatency ? static_cast<int>(m_lowLatencyAudioRingBufferMs) : 100);
         m_audioRingBuffer->setStats(m_stats);
 
-        m_sdlAudio = new SDLAudio(m_audioRingBuffer, m_clock, m_stats);
+        int desiredSamples = m_lowLatency ? 512 : 1024;
+        m_sdlAudio = new SDLAudio(m_audioRingBuffer, m_clock, m_stats, desiredSamples);
         if (!m_sdlAudio->init(48000, 2)) {
             LOG_WARN("SDL audio init failed, audio disabled");
             delete m_sdlAudio;
@@ -296,7 +301,8 @@ void StreamLifecycleManager::startThreads() {
             m_audioWorker = new AudioWorker(m_audioCodecCtx, audioTimeBase,
                                               m_audioQueue, m_clock,
                                               m_audioRingBuffer, m_stats);
-            LOG_INFO("Audio pipeline: SDLAudio + AudioRingBuffer(100ms)");
+            LOG_INFO("Audio pipeline: SDLAudio(samples=%d) + AudioRingBuffer(%dms)",
+                     desiredSamples, m_lowLatency ? static_cast<int>(m_lowLatencyAudioRingBufferMs) : 100);
         }
     }
 

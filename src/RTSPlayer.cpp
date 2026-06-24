@@ -82,6 +82,7 @@ void RTSPlayer::setAudioEnabled(bool v) {
 
 void RTSPlayer::setSetptsZero(bool v) {
     m_setptsZero = v;
+    m_lowLatency = v;
     m_lifecycle->setSetptsZero(v);
 }
 
@@ -96,7 +97,9 @@ void RTSPlayer::videoRefresh() {
 
     constexpr double DEFAULT_FRAME_DURATION   = 0.033;
     constexpr double SYNC_THRESHOLD           = 0.040;
-    constexpr double MAX_AUDIO_LAG_FOR_QUEUE  = 0.250;
+    constexpr double maxAudioLagForQueue_NORMAL = 0.250;
+    constexpr double maxAudioLagForQueue_LOWLAT = 0.080;
+    double maxAudioLagForQueue = m_lowLatency ? maxAudioLagForQueue_LOWLAT : maxAudioLagForQueue_NORMAL;
     constexpr int64_t DROP_THRESHOLD_US       = 50000;
     constexpr int64_t MIN_DROP_INTERVAL_US    = 33000;
 
@@ -175,11 +178,11 @@ void RTSPlayer::videoRefresh() {
             double audioClockNow = ac.pts + (nowUs - ac.systemTime) / (double)AV_TIME_BASE;
             double avDiff = framePtsSec - audioClockNow;
 
-            if (avDiff < -MAX_AUDIO_LAG_FOR_QUEUE) {
+            if (avDiff < -maxAudioLagForQueue) {
                 if (m_frameQueue->count() > 1) {
                     // Normal catch-up: drop queued frames to skip ahead
                     int dropped = 0;
-                    while (m_frameQueue->count() > 1 && avDiff < -MAX_AUDIO_LAG_FOR_QUEUE) {
+                    while (m_frameQueue->count() > 1 && avDiff < -maxAudioLagForQueue) {
                         m_frameQueue->discardAndAdvance();
                         m_stats->framesDropped++;
                         m_stats->catchUpDrops++;

@@ -11,10 +11,12 @@ extern "C" {
 #include <libavutil/time.h>
 }
 
-SDLAudio::SDLAudio(AudioRingBuffer* ringBuffer, AVClock* clock, PlayerStats* stats)
+SDLAudio::SDLAudio(AudioRingBuffer* ringBuffer, AVClock* clock, PlayerStats* stats,
+                   int desiredSamples)
     : m_ringBuffer(ringBuffer)
     , m_clock(clock)
     , m_stats(stats)
+    , m_desiredSamples(desiredSamples)
 {
 }
 
@@ -28,7 +30,7 @@ bool SDLAudio::init(int sampleRate, int channels) {
     desired.freq     = sampleRate;
     desired.format   = AUDIO_S16SYS;
     desired.channels = channels;
-    desired.samples  = 1024;
+    desired.samples  = m_desiredSamples;
     desired.callback = sdlCallback;
     desired.userdata = this;
 

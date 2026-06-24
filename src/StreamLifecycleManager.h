@@ -42,8 +42,10 @@ public:
 
     void setTransport(const char* transport);
     void setAudioEnabled(bool v) { m_audioEnabled = v; }
-    void setSetptsZero(bool v)   { m_setptsZero = v; }
+    void setSetptsZero(bool v)   { m_setptsZero = v; m_lowLatency = v; }
+    void setLowLatency(bool v)   { m_lowLatency = v; }
     bool setptsZero() const      { return m_setptsZero; }
+    bool lowLatency() const      { return m_lowLatency; }
 
     PlayerStats* stats()    const { return m_stats; }
     PlayerState  state()    const;
@@ -91,8 +93,11 @@ private:
     int                  m_backoffCount     = 0;
     int64_t              m_videoQueueCapacityMs = 200;
     int64_t              m_lowLatencyVideoQueueCapacityMs = 33;
+    int64_t              m_lowLatencyAudioQueueCapacityMs = 66;
+    int64_t              m_lowLatencyAudioRingBufferMs = 60;
     bool                 m_audioEnabled     = true;
     bool                 m_setptsZero       = false;
+    bool                 m_lowLatency       = false;
 
     std::atomic<uint64_t> m_generation{1};
     std::string           m_url;

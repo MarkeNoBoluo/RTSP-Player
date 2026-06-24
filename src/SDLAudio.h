@@ -6,7 +6,8 @@ class PlayerStats;
 
 class SDLAudio {
 public:
-    SDLAudio(AudioRingBuffer* ringBuffer, AVClock* clock, PlayerStats* stats);
+    SDLAudio(AudioRingBuffer* ringBuffer, AVClock* clock, PlayerStats* stats,
+             int desiredSamples = 1024);
     ~SDLAudio();
 
     bool init(int sampleRate, int channels);
@@ -27,4 +28,5 @@ private:
     int m_sampleRate  = 48000;
     int m_channels    = 2;
     int m_bytesPerFrame = 4;  // default stereo s16: 2ch × 2bytes
+    int m_desiredSamples = 1024;
 };

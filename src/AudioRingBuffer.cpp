@@ -22,12 +22,19 @@ bool AudioRingBuffer::write(const uint8_t* data, int len, double pts, int serial
 
     std::unique_lock<std::mutex> lock(m_mutex);
 
-    if (m_avail >= kMaxChunks) {
-        m_writeBlockCount.fetch_add(1, std::memory_order_relaxed);
-        while (m_avail >= kMaxChunks && !m_abort) {
-            m_cv.wait(lock);
-        }
+    // Discard oldest chunks until there's room (by bytes or by chunk count)
+    int maxBytes = maxBufferBytes();
+    while (m_avail > 0 && (m_avail >= kMaxChunks || m_totalBytes + len > maxBytes)) {
+        Chunk& oldest = m_chunks[m_readIdx];
+        m_totalBytes -= oldest.len;
+        delete[] oldest.data;
+        oldest.data = nullptr;
+        oldest.len  = 0;
+        m_readIdx  = (m_readIdx + 1) % kMaxChunks;
+        if (m_readOffset > 0) m_readOffset = 0;
+        m_avail--;
     }
+
     if (m_abort) return false;
 
     Chunk& chunk = m_chunks[m_writeIdx];
@@ -40,6 +47,7 @@ bool AudioRingBuffer::write(const uint8_t* data, int len, double pts, int serial
 
     m_writeIdx = (m_writeIdx + 1) % kMaxChunks;
     m_avail++;
+    m_totalBytes += len;
 
     lock.unlock();
     m_cv.notify_one();
@@ -73,6 +81,7 @@ int AudioRingBuffer::read(uint8_t* dst, int len, double* outPts, int* outChunkOf
         }
 
         if (m_readOffset >= chunk.len) {
+            m_totalBytes -= chunk.len;
             delete[] chunk.data;
             chunk.data = nullptr;
             chunk.len  = 0;
@@ -117,6 +126,7 @@ int AudioRingBuffer::read(uint8_t* dst, int len, double* outClockPts) {
         filled += toCopy;
 
         if (m_readOffset >= chunk.len) {
+            m_totalBytes -= chunk.len;
             delete[] chunk.data;
             chunk.data = nullptr;
             chunk.len  = 0;
@@ -146,6 +156,7 @@ void AudioRingBuffer::flush() {
     m_readIdx    = 0;
     m_readOffset = 0;
     m_avail      = 0;
+    m_totalBytes = 0;
     m_writeBlockCount.store(0, std::memory_order_relaxed);
     m_readEmptyCount.store(0, std::memory_order_relaxed);
     m_serial.fetch_add(1);

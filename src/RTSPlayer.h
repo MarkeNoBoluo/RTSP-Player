@@ -55,6 +55,7 @@ private:
     bool     m_inVideoRefresh   = false;
     bool     m_fastCatchUp      = false;
     bool     m_setptsZero       = false;
+    bool     m_lowLatency       = false;
     int      m_fastCatchUpFrameCount = 0;
     int64_t  m_videoStallBeginUs = 0;   // 0 = not in stall
 };

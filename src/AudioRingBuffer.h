@@ -16,8 +16,15 @@ public:
         int      serial = 0;
     };
 
-    AudioRingBuffer(int bufferMs = 100);
+    AudioRingBuffer(int bufferMs = kDefaultBufferMs);
     ~AudioRingBuffer();
+
+    static constexpr int kDefaultBufferMs = 100;
+    static constexpr int kLowLatencyBufferMs = 60;
+
+    int maxBufferBytes() const {
+        return m_sampleRate * m_bytesPerFrame * m_bufferMs / 1000;
+    }
 
     void setStats(PlayerStats* stats) { m_stats = stats; }
     void setAudioParams(int sampleRate, int bytesPerFrame) {
@@ -51,6 +58,7 @@ private:
     int m_readIdx  = 0;
     int m_readOffset = 0;  // bytes already consumed from current chunk
     int m_avail = 0;       // number of readable chunks
+    int m_totalBytes = 0;  // total bytes across all chunks in buffer
 
     std::atomic<int> m_serial{0};
 
