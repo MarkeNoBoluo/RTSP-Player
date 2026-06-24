@@ -158,6 +158,32 @@ void AudioWorker::run() {
 
             if (!m_swrCtx) {
                 int inRate = frame->sample_rate > 0 ? frame->sample_rate : kTargetRate;
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+                // FFmpeg >= 5.0: AVChannelLayout API
+                int inChannels = frame->ch_layout.nb_channels > 0
+                    ? frame->ch_layout.nb_channels : kTargetChannels;
+                AVChannelLayout inLayout;
+                if (inChannels == frame->ch_layout.nb_channels) {
+                    av_channel_layout_copy(&inLayout, &frame->ch_layout);
+                } else {
+                    av_channel_layout_default(&inLayout, inChannels);
+                }
+
+                AVChannelLayout stereoLayout = AV_CHANNEL_LAYOUT_STEREO;
+                int swrRet = swr_alloc_set_opts2(&m_swrCtx,
+                    &stereoLayout, (AVSampleFormat)kTargetFormat, kTargetRate,
+                    &inLayout, (AVSampleFormat)frame->format, inRate,
+                    0, nullptr);
+                av_channel_layout_uninit(&inLayout);
+
+                if (swrRet < 0 || !m_swrCtx || swr_init(m_swrCtx) < 0) {
+                    LOG_ERROR("swr_init failed: in=%dHz/%dch out=%dHz/stereo", inRate, inChannels);
+                    if (m_swrCtx) swr_free(&m_swrCtx);
+                    m_running = false;
+                    break;
+                }
+#else
+                // FFmpeg 4.x: legacy channel_layout API
                 int inChannels = frame->channels > 0 ? frame->channels : kTargetChannels;
                 int64_t inLayout = (frame->channel_layout && inChannels ==
                     av_get_channel_layout_nb_channels(frame->channel_layout))
@@ -174,6 +200,7 @@ void AudioWorker::run() {
                     m_running = false;
                     break;
                 }
+#endif
                 LOG_INFO("Audio swr: %dHz/%dch -> %dHz/stereo/s16", inRate, inChannels, kTargetRate);
             }
 

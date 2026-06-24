@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\Repositories\QT-Resources\RTSP-Player\build_x64\CMakeFiles\a9f281c350321273ab1fb853c78f17e3\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{D2E26CA8-0667-308A-9E72-6A796B76C2F6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

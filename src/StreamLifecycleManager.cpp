@@ -186,9 +186,14 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_audioCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_audioCodecPar, m_audioStream->codecpar);
         m_audioQueue->init(m_audioStream->time_base, 200, "audio");
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+        int audioChannels = m_audioCodecPar->ch_layout.nb_channels;
+#else
+        int audioChannels = m_audioCodecPar->channels;
+#endif
         LOG_INFO("Audio stream: index=%d, codec=%d, %dHz/%dch",
                  audioIdx, m_audioCodecPar->codec_id,
-                 m_audioCodecPar->sample_rate, m_audioCodecPar->channels);
+                 m_audioCodecPar->sample_rate, audioChannels);
     }
 
     if (!m_videoStream) {
@@ -230,8 +235,13 @@ bool StreamLifecycleManager::initDecoders() {
         avcodec_parameters_to_context(m_audioCodecCtx, m_audioCodecPar);
         m_audioCodecCtx->thread_count = 1;
         if (avcodec_open2(m_audioCodecCtx, codec, nullptr) < 0) return false;
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+        int decChannels = m_audioCodecCtx->ch_layout.nb_channels;
+#else
+        int decChannels = m_audioCodecCtx->channels;
+#endif
         LOG_INFO("Audio decoder opened: %dHz/%dch",
-                 m_audioCodecCtx->sample_rate, m_audioCodecCtx->channels);
+                 m_audioCodecCtx->sample_rate, decChannels);
     }
 
     return true;
