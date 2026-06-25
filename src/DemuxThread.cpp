@@ -73,6 +73,7 @@ void DemuxThread::run() {
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
                 LOG_INFO("av_read_frame returned EOF");
+                if (m_onEndOfStream) m_onEndOfStream();
                 break;
             }
             if (m_abort) break;

@@ -43,7 +43,8 @@ void PlayerStats::writeCsvRow() {
                  "reconn,reconMs,"
                  "v1stDecUs,v1stRendUs,a1stDecUs,a1stPlayUs,"
                  "frameId,"
-                 "vPopTO,catDrop,vStall,audDiffMs,clkDiffMs");
+                 "vPopTO,catDrop,vStall,audDiffMs,clkDiffMs,"
+                 "hwDecEnabled,hwDecFrames,hwXferFail,hwXferMaxUs");
         m_csvHeaderWritten = true;
     }
 
@@ -107,6 +108,11 @@ void PlayerStats::writeCsvRow() {
     int64_t adm = frameAudDiffMs.exchange(0);
     int64_t cdm = clockDiffMs.exchange(0);
 
+    bool    hwEn   = hwDecodeEnabled.load();
+    int64_t hwDec  = hwDecodedFrames.load();
+    int     hwFail = hwTransferFailures.exchange(0);
+    int64_t hwMax  = hwTransferMaxUs.exchange(0);
+
     uint64_t fid  = frameId.load();
     int64_t  elap = static_cast<int64_t>(time(nullptr));
 
@@ -124,7 +130,8 @@ void PlayerStats::writeCsvRow() {
        << rec << ',' << recMs << ','
        << vfdUs << ',' << vfrUs << ',' << afdUs << ',' << afpUs << ','
        << fid << ','
-       << vpt << ',' << cdr << ',' << vst << ',' << adm << ',' << cdm;
+       << vpt << ',' << cdr << ',' << vst << ',' << adm << ',' << cdm
+       << ',' << hwEn << ',' << hwDec << ',' << hwFail << ',' << hwMax;
 
     csvWrite(ss.str());
 

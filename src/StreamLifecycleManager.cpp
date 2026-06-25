@@ -13,11 +13,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <thread>
 #include <SDL.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/time.h>
 }
 
@@ -115,6 +117,10 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         LOG_INFO("Stream error detected, shutting down for reconnect");
         shutdownPipeline();
         scheduleReconnect();
+    });
+    m_demuxThread->setEndOfStreamCallback([this]() {
+        LOG_INFO("End of stream detected, requesting application exit");
+        if (m_onEndOfStream) m_onEndOfStream();
     });
 
     m_fmtCtx = avformat_alloc_context();
@@ -227,6 +233,49 @@ bool StreamLifecycleManager::initDecoders() {
         m_videoCodecCtx = avcodec_alloc_context3(codec);
         if (!m_videoCodecCtx) return false;
         avcodec_parameters_to_context(m_videoCodecCtx, m_videoCodecPar);
+
+        // DXVA2 hardware decode setup
+        bool enableDxva2 = (m_hwAccelMode != HwAccelMode::None);
+#if defined(_WIN32) && !defined(_WIN64)
+        if (m_hwAccelMode == HwAccelMode::Auto) {
+            enableDxva2 = false;
+            LOG_WARN("DXVA2 auto disabled for 32-bit process; using software decode. Use --hwaccel dxva2 to force hardware decode.");
+        }
+#endif
+        if (enableDxva2) {
+            bool hwFound = false;
+            for (int i = 0;; i++) {
+                const AVCodecHWConfig* hwCfg = avcodec_get_hw_config(codec, i);
+                if (!hwCfg) break;
+                if (hwCfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX
+                    && hwCfg->device_type == AV_HWDEVICE_TYPE_DXVA2) {
+                    hwFound = true;
+                    break;
+                }
+            }
+            if (hwFound) {
+                int hwRet = av_hwdevice_ctx_create(&m_hwDeviceCtx, AV_HWDEVICE_TYPE_DXVA2,
+                                                    nullptr, nullptr, 0);
+                if (hwRet >= 0) {
+                    m_videoCodecCtx->hw_device_ctx = av_buffer_ref(m_hwDeviceCtx);
+                    m_stats->hwDecodeEnabled.store(true);
+                    LOG_INFO("DXVA2 hardware decoder enabled");
+                } else {
+                    if (m_hwAccelMode == HwAccelMode::Dxva2) {
+                        LOG_ERROR("DXVA2 hardware device creation failed (forced mode)");
+                        return false;
+                    }
+                    LOG_WARN("DXVA2 hardware device creation failed, falling back to software decode");
+                }
+            } else {
+                if (m_hwAccelMode == HwAccelMode::Dxva2) {
+                    LOG_ERROR("DXVA2 hardware config not found for this codec (forced mode)");
+                    return false;
+                }
+                LOG_INFO("No DXVA2 hardware config for this codec, using software decode");
+            }
+        }
+
         if (m_lowLatency) {
             m_videoCodecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
             m_videoCodecCtx->thread_count = 1;
@@ -397,6 +446,9 @@ void StreamLifecycleManager::shutdownPipeline() {
         m_audioRingBuffer = nullptr;
     }
 
+    if (m_hwDeviceCtx) { av_buffer_unref(&m_hwDeviceCtx); m_hwDeviceCtx = nullptr; }
+    m_stats->hwDecodeEnabled.store(false);
+
     if (m_videoCodecCtx) { avcodec_flush_buffers(m_videoCodecCtx); avcodec_free_context(&m_videoCodecCtx); }
     if (m_audioCodecCtx) { avcodec_flush_buffers(m_audioCodecCtx); avcodec_free_context(&m_audioCodecCtx); }
 
@@ -491,4 +543,17 @@ void StreamLifecycleManager::setTransport(const char* transport) {
     if (transport && transport[0]) {
         m_transport = transport;
     }
+}
+
+void StreamLifecycleManager::setHwAccel(const char* mode) {
+    if (!mode || !mode[0]) return;
+    m_hwAccel = mode;
+    if (std::strcmp(mode, "dxva2") == 0) {
+        m_hwAccelMode = HwAccelMode::Dxva2;
+    } else if (std::strcmp(mode, "none") == 0) {
+        m_hwAccelMode = HwAccelMode::None;
+    } else {
+        m_hwAccelMode = HwAccelMode::Auto;
+    }
+    LOG_INFO("HWAccel mode set: %s", m_hwAccel.c_str());
 }

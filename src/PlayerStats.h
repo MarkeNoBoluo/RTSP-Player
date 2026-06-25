@@ -76,6 +76,12 @@ public:
     std::atomic<int64_t> lastCommitUs{0};
     std::atomic<int64_t> reconnectStartUs{0};
 
+    // HW decode metrics
+    std::atomic<bool>    hwDecodeEnabled{false};     // HW decoder active
+    std::atomic<int64_t> hwDecodedFrames{0};         // cumulative HW-decoded frames
+    std::atomic<int>     hwTransferFailures{0};       // av_hwframe_transfer_data failures
+    std::atomic<int64_t> hwTransferMaxUs{0};          // peak transfer time (us)
+
     // CSV
     bool initCsv(const std::string& path);
     void writeCsvRow();

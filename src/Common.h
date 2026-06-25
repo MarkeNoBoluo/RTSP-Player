@@ -22,6 +22,12 @@ enum class PlayerState : int {
     Closing
 };
 
+enum class HwAccelMode : int {
+    Auto,   // Try DXVA2, fall back to software on failure
+    Dxva2,  // Force DXVA2, fail if unavailable
+    None    // Software decode only
+};
+
 struct VideoFrame {
     AVFrame* frame = nullptr;
     int64_t  pts   = AV_NOPTS_VALUE;
@@ -38,4 +44,5 @@ struct ClockPoint {
 enum UserEventCode : int {
     EVENT_RECONNECT = 1,
     EVENT_STATS     = 2,
+    EVENT_STREAM_EOF = 3,
 };

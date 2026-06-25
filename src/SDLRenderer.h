@@ -31,7 +31,7 @@ public:
 private:
     void recreateTexture(int width, int height);
     void updateDisplayRect();
-    bool ensureSwsContext(int width, int height);
+    bool ensureSwsContext(int width, int height, int srcFormat);
     int convertToNV12(AVFrame* src, uint8_t** outPlanes, int* outStrides);
 
     SDL_Window*   m_window   = nullptr;
@@ -43,6 +43,7 @@ private:
     uint8_t*    m_swsBuf   = nullptr;
     int         m_swsBufW  = 0;
     int         m_swsBufH  = 0;
+    int         m_swsSrcFormat = -1;
 
     const char*   m_title;
     int m_texW = 0;

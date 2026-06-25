@@ -7,6 +7,7 @@
 extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
 }
 
 SDLRenderer::SDLRenderer(const char* title, int w, int h, bool fullscreen)
@@ -56,18 +57,20 @@ SDLRenderer::~SDLRenderer() {
 bool SDLRenderer::init(int width, int height) {
     recreateTexture(width, height);
     updateDisplayRect();
-    if (!m_swsCtx) {
-        ensureSwsContext(width, height);
-    }
-    return m_texture != nullptr && m_swsCtx != nullptr;
+    return m_texture != nullptr;
 }
 
-bool SDLRenderer::ensureSwsContext(int width, int height) {
+bool SDLRenderer::ensureSwsContext(int width, int height, int srcFormat) {
     if (m_swsBufW != width || m_swsBufH != height) {
         delete[] m_swsBuf;
         m_swsBuf = nullptr;
         m_swsBufW = 0;
         m_swsBufH = 0;
+        if (m_swsCtx) {
+            sws_freeContext(m_swsCtx);
+            m_swsCtx = nullptr;
+        }
+        m_swsSrcFormat = -1;
     }
     if (!m_swsBuf) {
         int ySize  = width * height;
@@ -77,14 +80,21 @@ bool SDLRenderer::ensureSwsContext(int width, int height) {
         m_swsBufH  = height;
     }
 
+    if (m_swsCtx && m_swsSrcFormat == srcFormat) {
+        return true;
+    }
+
     sws_freeContext(m_swsCtx);
-    m_swsCtx = sws_getContext(width, height, AV_PIX_FMT_YUV420P,
+    m_swsCtx = sws_getContext(width, height, static_cast<AVPixelFormat>(srcFormat),
                               width, height, AV_PIX_FMT_NV12,
                               SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
     if (!m_swsCtx) {
-        LOG_ERROR("sws_getContext failed for %dx%d YUV420P→NV12", width, height);
+        const char* srcName = av_get_pix_fmt_name(static_cast<AVPixelFormat>(srcFormat));
+        LOG_ERROR("sws_getContext failed for %dx%d %s->NV12",
+                  width, height, srcName ? srcName : "unknown");
         return false;
     }
+    m_swsSrcFormat = srcFormat;
     return true;
 }
 
@@ -113,23 +123,43 @@ void SDLRenderer::displayFrame(AVFrame* frame) {
     if (frame->width != m_texW || frame->height != m_texH || !m_texture) {
         recreateTexture(frame->width, frame->height);
         updateDisplayRect();
-        ensureSwsContext(frame->width, frame->height);
     }
-    if (!m_texture || !m_swsCtx) return;
+    if (!m_texture) return;
 
     Uint64 t0 = SDL_GetPerformanceCounter();
 
-    uint8_t* nv12Planes[4];
-    int      nv12Strides[4];
-    int scaledHeight = convertToNV12(frame, nv12Planes, nv12Strides);
-    if (scaledHeight <= 0) return;
-    (void)scaledHeight;
+    uint8_t* updateY = nullptr;
+    uint8_t* updateUV = nullptr;
+    int updateYStride = 0;
+    int updateUVStride = 0;
+    bool converted = false;
+
+    if (frame->format == AV_PIX_FMT_NV12) {
+        if (!frame->data[1]) return;
+        updateY = frame->data[0];
+        updateUV = frame->data[1];
+        updateYStride = frame->linesize[0];
+        updateUVStride = frame->linesize[1];
+    } else {
+        if (!ensureSwsContext(frame->width, frame->height, frame->format)) return;
+
+        uint8_t* nv12Planes[4];
+        int      nv12Strides[4];
+        int scaledHeight = convertToNV12(frame, nv12Planes, nv12Strides);
+        if (scaledHeight <= 0) return;
+
+        updateY = nv12Planes[0];
+        updateUV = nv12Planes[1];
+        updateYStride = nv12Strides[0];
+        updateUVStride = nv12Strides[1];
+        converted = true;
+    }
 
     Uint64 t1 = SDL_GetPerformanceCounter();
 
     SDL_UpdateNVTexture(m_texture, nullptr,
-                        nv12Planes[0], nv12Strides[0],
-                        nv12Planes[1], nv12Strides[1]);
+                        updateY, updateYStride,
+                        updateUV, updateUVStride);
 
     Uint64 t2 = SDL_GetPerformanceCounter();
 
@@ -143,7 +173,7 @@ void SDLRenderer::displayFrame(AVFrame* frame) {
     frameCount++;
     if (frameCount <= 5 || frameCount % 30 == 0) {
         Uint64 freq = SDL_GetPerformanceFrequency();
-        double swsMs   = 1000.0 * (t1 - t0) / freq;
+        double swsMs   = converted ? 1000.0 * (t1 - t0) / freq : 0.0;
         double updMs   = 1000.0 * (t2 - t1) / freq;
         double rendMs  = 1000.0 * (t3 - t2) / freq;
         double totalMs = 1000.0 * (t3 - t0) / freq;
@@ -162,6 +192,7 @@ void SDLRenderer::destroy() {
     if (m_swsCtx)  { sws_freeContext(m_swsCtx); m_swsCtx = nullptr; }
     delete[] m_swsBuf;  m_swsBuf = nullptr;
     m_swsBufW = 0; m_swsBufH = 0;
+    m_swsSrcFormat = -1;
 
     if (m_texture)  { SDL_DestroyTexture(m_texture);   m_texture  = nullptr; }
     if (m_renderer) { SDL_DestroyRenderer(m_renderer); m_renderer = nullptr; }

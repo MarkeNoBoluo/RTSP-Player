@@ -19,6 +19,7 @@ class PlayerStats;
 class DemuxThread {
 public:
     using StreamErrorCallback = std::function<void()>;
+    using EndOfStreamCallback = std::function<void()>;
 
     DemuxThread(PlayerStateMachine* sm, PlayerStats* stats,
                 PacketQueue* videoQueue, PacketQueue* audioQueue);
@@ -27,6 +28,7 @@ public:
     void prepareForOpen();
     void setContext(AVFormatContext* fmtCtx, AVStream* videoStream, AVStream* audioStream);
     void setStreamErrorCallback(StreamErrorCallback cb) { m_onStreamError = std::move(cb); }
+    void setEndOfStreamCallback(EndOfStreamCallback cb) { m_onEndOfStream = std::move(cb); }
     void setSerial(int serial) { m_serial = serial; }
 
     void start();
@@ -51,5 +53,6 @@ private:
     int64_t             m_lastReadTime = 0;
 
     StreamErrorCallback m_onStreamError;
+    EndOfStreamCallback m_onEndOfStream;
     std::thread         m_thread;
 };

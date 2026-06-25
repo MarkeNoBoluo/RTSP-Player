@@ -15,6 +15,7 @@ class RTSPlayer {
 public:
     using StateCallback = std::function<void(PlayerState)>;
     using ErrorCallback = std::function<void(const char*)>;
+    using EndOfStreamCallback = std::function<void()>;
 
     RTSPlayer();
     ~RTSPlayer();
@@ -29,9 +30,11 @@ public:
 
     void setStateCallback(StateCallback cb);
     void setErrorCallback(ErrorCallback cb);
+    void setEndOfStreamCallback(EndOfStreamCallback cb);
     void setTransport(const char* transport);
     void setAudioEnabled(bool v);
     void setSetptsZero(bool v);
+    void setHwAccel(const char* mode);
 
     void videoRefresh();
 

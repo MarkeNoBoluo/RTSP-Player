@@ -39,6 +39,14 @@ static Uint32 onStatsTimer(Uint32 interval, void* param) {
     return interval; // repeating timer
 }
 
+static void pushStreamEofEvent() {
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = SDL_USEREVENT;
+    event.user.code = EVENT_STREAM_EOF;
+    SDL_PushEvent(&event);
+}
+
 static void printHelp(const char* prog) {
     fprintf(stderr,
         "Usage: %s --url <rtsp_url> [options]\n"
@@ -53,11 +61,12 @@ static void printHelp(const char* prog) {
         "  --no-csv                  Disable CSV stats\n"
         "  --fullscreen              Start in fullscreen mode\n"
         "  --windowed                Start in windowed mode (default)\n"
-        "  --transport <tcp|udp>     RTSP transport protocol (default: udp, tcp for --setpts-zero)\n"
+        "  --transport <tcp|udp>     RTSP transport protocol (default: tcp)\n"
         "  --title <string>          Window title (default: \"RTSP Player\")\n"
         "  --exit-after <seconds>    Auto-exit after N seconds\n"
         "  --no-audio               Disable audio stream processing\n"
         "  --setpts-zero            Low-latency mode (video + audio if available)\n"
+        "  --hwaccel <auto|dxva2|none> Hardware decode mode (default: auto; x86 auto uses software)\n"
         "\n"
         "Examples:\n"
         "  %s --url rtsp://192.168.1.100:554/stream\n"
@@ -73,14 +82,14 @@ int main(int argc, char* argv[]) {
     const char* rtspUrl     = nullptr;
     const char* logPath     = "rtsp_player.log";
     const char* winTitle    = "RTSP Player";
-    const char* transport   = "udp";
-    bool        transportExplicit = false;
+    const char* transport   = "tcp";
     bool        fullscreen  = false;
     bool        noAudio     = false;
     bool        setptsZero  = false;
     double      exitAfterSec = 0.0;
     const char* csvPath     = "rtsp_player_stats.csv";   // CSV enabled by default
     bool        csvExplicit  = false;   // true if --csv or --no-csv explicitly set
+    const char* hwaccel     = "auto";
     bool        deprecatedPos = false;
     int         positional   = 0;
 
@@ -142,7 +151,6 @@ int main(int argc, char* argv[]) {
                 std::exit(1);
             }
             transport = v;
-            transportExplicit = true;
         } else if (std::strcmp(argv[i], "--title") == 0) {
             winTitle = requireValue("--title");
         } else if (std::strcmp(argv[i], "--exit-after") == 0) {
@@ -154,6 +162,14 @@ int main(int argc, char* argv[]) {
                 printHelp(argv[0]);
                 std::exit(1);
             }
+        } else if (std::strcmp(argv[i], "--hwaccel") == 0) {
+            const char* v = requireValue("--hwaccel");
+            if (std::strcmp(v, "auto") != 0 && std::strcmp(v, "dxva2") != 0 && std::strcmp(v, "none") != 0) {
+                fprintf(stderr, "Error: --hwaccel must be 'auto', 'dxva2', or 'none', got '%s'\n\n", v);
+                printHelp(argv[0]);
+                std::exit(1);
+            }
+            hwaccel = v;
         } else if (argv[i][0] == '-') {
             // Unknown flag
             fprintf(stderr, "Error: unknown option '%s'\n\n", argv[i]);
@@ -196,10 +212,6 @@ int main(int argc, char* argv[]) {
     // ── Create renderer ───────────────────────────────────────────
     SDLRenderer renderer(winTitle, 1920, 1080, fullscreen);
 
-    if (setptsZero && !transportExplicit) {
-        transport = "tcp";
-    }
-
     // ── Build default URL if none provided ────────────────────────
     char defaultUrl[512];
     if (!rtspUrl) {
@@ -225,6 +237,9 @@ int main(int argc, char* argv[]) {
     player.setErrorCallback([](const char* msg) {
         LOG_ERROR("Error: %s", msg);
     });
+    player.setEndOfStreamCallback([]() {
+        pushStreamEofEvent();
+    });
 
     bool running = true;
     auto requestExit = [&](const char* reason) {
@@ -245,6 +260,7 @@ int main(int argc, char* argv[]) {
         LOG_INFO("  Fullscreen: %s", fullscreen ? "yes" : "no");
         LOG_INFO("  Audio:      %s", noAudio ? "disabled" : "enabled");
         LOG_INFO("  SetptsZero: %s", setptsZero ? "yes" : "no");
+        LOG_INFO("  HWAccel:    %s", hwaccel);
         LOG_INFO("  Exit after: %s", exitBuf);
         LOG_INFO("===============================");
     }
@@ -254,6 +270,7 @@ int main(int argc, char* argv[]) {
     if (setptsZero) {
         player.setSetptsZero(true);
     }
+    player.setHwAccel(hwaccel);
 
     if (!player.open(rtspUrl)) {
         requestExit("open failed");
@@ -305,6 +322,9 @@ int main(int argc, char* argv[]) {
                     break;
                 case EVENT_STATS:
                     static_cast<PlayerStats*>(event.user.data1)->writeCsvRow();
+                    break;
+                case EVENT_STREAM_EOF:
+                    requestExit("stream EOF");
                     break;
                 }
                 break;

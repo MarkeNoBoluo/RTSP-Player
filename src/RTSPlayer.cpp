@@ -72,6 +72,10 @@ void RTSPlayer::setErrorCallback(ErrorCallback cb) {
     m_lifecycle->setErrorCallback(std::move(cb));
 }
 
+void RTSPlayer::setEndOfStreamCallback(EndOfStreamCallback cb) {
+    m_lifecycle->setEndOfStreamCallback(std::move(cb));
+}
+
 void RTSPlayer::setTransport(const char* transport) {
     m_lifecycle->setTransport(transport);
 }
@@ -84,6 +88,10 @@ void RTSPlayer::setSetptsZero(bool v) {
     m_setptsZero = v;
     m_lowLatency = v;
     m_lifecycle->setSetptsZero(v);
+}
+
+void RTSPlayer::setHwAccel(const char* mode) {
+    m_lifecycle->setHwAccel(mode);
 }
 
 int RTSPlayer::pktSerial() const {

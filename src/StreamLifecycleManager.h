@@ -28,6 +28,7 @@ class StreamLifecycleManager {
 public:
     using StateCallback = std::function<void(PlayerState)>;
     using ErrorCallback = std::function<void(const char*)>;
+    using EndOfStreamCallback = std::function<void()>;
 
     StreamLifecycleManager(PlayerStateMachine* sm, PlayerStats* stats,
                            PacketQueue* videoQ, PacketQueue* audioQ,
@@ -36,6 +37,7 @@ public:
 
     void setStateCallback(StateCallback cb) { m_onState = std::move(cb); }
     void setErrorCallback(ErrorCallback cb) { m_onError = std::move(cb); }
+    void setEndOfStreamCallback(EndOfStreamCallback cb) { m_onEndOfStream = std::move(cb); }
 
     bool open(const char* url);
     void close();
@@ -43,6 +45,7 @@ public:
     void setTransport(const char* transport);
     void setAudioEnabled(bool v) { m_audioEnabled = v; }
     void setSetptsZero(bool v)   { m_setptsZero = v; m_lowLatency = v; }
+    void setHwAccel(const char* mode);
     void setLowLatency(bool v)   { m_lowLatency = v; }
     bool setptsZero() const      { return m_setptsZero; }
     bool lowLatency() const      { return m_lowLatency; }
@@ -103,6 +106,12 @@ private:
     std::string           m_url;
     std::string           m_transport{"udp"};
 
+    // DXVA2 hardware decode
+    AVBufferRef*  m_hwDeviceCtx    = nullptr;
+    HwAccelMode   m_hwAccelMode{HwAccelMode::Auto};
+    std::string   m_hwAccel{"auto"};
+
     StateCallback m_onState;
     ErrorCallback m_onError;
+    EndOfStreamCallback m_onEndOfStream;
 };

@@ -3,6 +3,8 @@
 #include "logger/Logger.h"
 
 extern "C" {
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/time.h>
 }
 
@@ -36,6 +38,11 @@ void VideoDecodeThread::join() {
     }
 }
 
+static bool isHwPixelFormat(int format) {
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(format));
+    return desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL);
+}
+
 void VideoDecodeThread::run() {
     m_abort = false;
     m_ready = false;
@@ -44,6 +51,7 @@ void VideoDecodeThread::run() {
 
     AVPacket* pkt = av_packet_alloc();
     AVFrame*  frame = av_frame_alloc();
+    AVFrame*  swFrame = av_frame_alloc();
 
     int timeoutCount = 0;
     bool wasStalled = false;
@@ -75,12 +83,23 @@ void VideoDecodeThread::run() {
                     int flushRet = avcodec_receive_frame(m_codecCtx, frame);
                     if (flushRet == AVERROR(EAGAIN) || flushRet == AVERROR_EOF) break;
                     if (flushRet < 0) break;
-                    int64_t pts = frame->pts;
-                    if (pts == AV_NOPTS_VALUE) pts = frame->pkt_dts;
+                    AVFrame* outputFrame = frame;
+                    if (isHwPixelFormat(frame->format)) {
+                        int xferRet = av_hwframe_transfer_data(swFrame, frame, 0);
+                        if (xferRet < 0) {
+                            m_stats->hwTransferFailures++;
+                            continue;
+                        }
+                        m_stats->hwDecodedFrames++;
+                        av_frame_copy_props(swFrame, frame);
+                        outputFrame = swFrame;
+                    }
+                    int64_t pts = outputFrame->pts;
+                    if (pts == AV_NOPTS_VALUE) pts = outputFrame->pkt_dts;
                     if (pts != AV_NOPTS_VALUE) {
                         pts = av_rescale_q(pts, m_timeBase, AVRational{1, AV_TIME_BASE});
                     }
-                    m_frameQueue->writeFrame(frame, pts, curSerial, m_stats);
+                    m_frameQueue->writeFrame(outputFrame, pts, curSerial, m_stats);
                     m_stats->framesDecoded++;
                 }
                 avcodec_flush_buffers(m_codecCtx);
@@ -177,8 +196,32 @@ void VideoDecodeThread::run() {
                 }
             }
 
-            int64_t pts = frame->pts;
-            if (pts == AV_NOPTS_VALUE) pts = frame->pkt_dts;
+            AVFrame* outputFrame = frame;
+            if (isHwPixelFormat(frame->format)) {
+                int64_t xferBefore = av_gettime_relative();
+                int xferRet = av_hwframe_transfer_data(swFrame, frame, 0);
+                int64_t xferUs = av_gettime_relative() - xferBefore;
+                if (xferRet < 0) {
+                    m_stats->hwTransferFailures++;
+                    continue;
+                }
+                {
+                    int64_t curMax = m_stats->hwTransferMaxUs.load(std::memory_order_acquire);
+                    while (xferUs > curMax) {
+                        if (m_stats->hwTransferMaxUs.compare_exchange_weak(
+                                curMax, xferUs,
+                                std::memory_order_release, std::memory_order_acquire)) {
+                            break;
+                        }
+                    }
+                }
+                m_stats->hwDecodedFrames++;
+                av_frame_copy_props(swFrame, frame);
+                outputFrame = swFrame;
+            }
+
+            int64_t pts = outputFrame->pts;
+            if (pts == AV_NOPTS_VALUE) pts = outputFrame->pkt_dts;
             if (pts != AV_NOPTS_VALUE) {
                 pts = av_rescale_q(pts, m_timeBase, AVRational{1, AV_TIME_BASE});
             }
@@ -186,10 +229,10 @@ void VideoDecodeThread::run() {
             if (m_stats->framesDecoded <= 1) {
                 LOG_INFO("Decoded frame #%lld: pts=%lld, %dx%d, fmt=%d",
                          (long long)m_stats->framesDecoded.load(), (long long)pts,
-                         frame->width, frame->height, frame->format);
+                         outputFrame->width, outputFrame->height, outputFrame->format);
             }
 
-            m_frameQueue->writeFrame(frame, pts, curSerial, m_stats);
+            m_frameQueue->writeFrame(outputFrame, pts, curSerial, m_stats);
 
             int64_t expectedZero = 0;
             m_stats->videoFirstDecodeUs.compare_exchange_strong(
@@ -201,6 +244,7 @@ void VideoDecodeThread::run() {
     }
 
     av_frame_free(&frame);
+    av_frame_free(&swFrame);
     av_packet_free(&pkt);
 
     m_stats->decodeErrorCount.store(sendErrs + recvErrs, std::memory_order_release);
