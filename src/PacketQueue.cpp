@@ -8,13 +8,16 @@ PacketQueue::~PacketQueue() {
     flush();
 }
 
-void PacketQueue::init(AVRational timeBase, int capacityMs, const char* name) {
+void PacketQueue::init(AVRational timeBase, int capacityMs, const char* name,
+                       bool dropOnOverflow) {
     assert(!m_initialized);
     m_initialized = true;
     m_capacityMs  = capacityMs;
+    m_dropOnOverflow = dropOnOverflow;
     m_timeBaseUs  = av_q2d(timeBase) * 1000000.0;
     m_name        = name ? name : "";
-    LOG_DEBUG("PacketQueue[%s] initialized: capacity=%dms, timeBase=%f", m_name.c_str(), capacityMs, m_timeBaseUs);
+    LOG_DEBUG("PacketQueue[%s] initialized: capacity=%dms, timeBase=%f, dropOnOverflow=%s",
+              m_name.c_str(), capacityMs, m_timeBaseUs, dropOnOverflow ? "yes" : "no");
 }
 
 bool PacketQueue::push(AVPacket* pkt, int serial) {
@@ -24,10 +27,9 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
     if (pkt->duration > 0) {
         durUs = static_cast<int64_t>(pkt->duration * m_timeBaseUs);
     }
-    bool lowLatency = (m_capacityMs <= 66);
 
     while (!m_queue.empty() && m_totalDurationUs + durUs > m_capacityMs * 1000LL) {
-        if (!m_abort && !lowLatency) {
+        if (!m_abort && !m_dropOnOverflow) {
             bool freed = m_cond.wait_for(lock, std::chrono::milliseconds(100),
                 [this, durUs] { return m_totalDurationUs + durUs <= m_capacityMs * 1000LL || m_abort; });
             if (m_abort) return false;

@@ -53,7 +53,7 @@ static void printHelp(const char* prog) {
         "  --no-csv                  Disable CSV stats\n"
         "  --fullscreen              Start in fullscreen mode\n"
         "  --windowed                Start in windowed mode (default)\n"
-        "  --transport <tcp|udp>     RTSP transport protocol (default: udp)\n"
+        "  --transport <tcp|udp>     RTSP transport protocol (default: udp, tcp for --setpts-zero)\n"
         "  --title <string>          Window title (default: \"RTSP Player\")\n"
         "  --exit-after <seconds>    Auto-exit after N seconds\n"
         "  --no-audio               Disable audio stream processing\n"
@@ -74,6 +74,7 @@ int main(int argc, char* argv[]) {
     const char* logPath     = "rtsp_player.log";
     const char* winTitle    = "RTSP Player";
     const char* transport   = "udp";
+    bool        transportExplicit = false;
     bool        fullscreen  = false;
     bool        noAudio     = false;
     bool        setptsZero  = false;
@@ -141,6 +142,7 @@ int main(int argc, char* argv[]) {
                 std::exit(1);
             }
             transport = v;
+            transportExplicit = true;
         } else if (std::strcmp(argv[i], "--title") == 0) {
             winTitle = requireValue("--title");
         } else if (std::strcmp(argv[i], "--exit-after") == 0) {
@@ -193,6 +195,10 @@ int main(int argc, char* argv[]) {
 
     // ── Create renderer ───────────────────────────────────────────
     SDLRenderer renderer(winTitle, 1920, 1080, fullscreen);
+
+    if (setptsZero && !transportExplicit) {
+        transport = "tcp";
+    }
 
     // ── Build default URL if none provided ────────────────────────
     char defaultUrl[512];

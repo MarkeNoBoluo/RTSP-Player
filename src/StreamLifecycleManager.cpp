@@ -182,7 +182,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         int64_t videoQueueCapacityMs = m_lowLatency
             ? m_lowLatencyVideoQueueCapacityMs
             : m_videoQueueCapacityMs;
-        m_videoQueue->init(m_videoStream->time_base, static_cast<int>(videoQueueCapacityMs), "video");
+        m_videoQueue->init(m_videoStream->time_base, static_cast<int>(videoQueueCapacityMs), "video", false);
         LOG_INFO("Video stream: index=%d, codec=%d, %dx%d",
                  videoIdx, m_videoCodecPar->codec_id,
                  m_videoCodecPar->width, m_videoCodecPar->height);
@@ -193,7 +193,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         m_audioCodecPar = avcodec_parameters_alloc();
         avcodec_parameters_copy(m_audioCodecPar, m_audioStream->codecpar);
         int64_t audioQueueCapacityMs = m_lowLatency ? m_lowLatencyAudioQueueCapacityMs : 200;
-        m_audioQueue->init(m_audioStream->time_base, static_cast<int>(audioQueueCapacityMs), "audio");
+        m_audioQueue->init(m_audioStream->time_base, static_cast<int>(audioQueueCapacityMs), "audio", m_lowLatency);
 #if LIBAVUTIL_VERSION_MAJOR >= 57
         int audioChannels = m_audioCodecPar->ch_layout.nb_channels;
 #else

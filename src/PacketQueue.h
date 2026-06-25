@@ -21,7 +21,8 @@ public:
     PacketQueue();
     ~PacketQueue();
 
-    void init(AVRational timeBase, int capacityMs = 200, const char* name = "");
+    void init(AVRational timeBase, int capacityMs = 200, const char* name = "",
+              bool dropOnOverflow = false);
     bool push(AVPacket* pkt, int serial = 0);
     bool pop(AVPacket* pkt, int timeoutMs);
     void flush();
@@ -46,6 +47,7 @@ private:
 
     bool    m_initialized = false;
     int     m_capacityMs  = 200;
+    bool    m_dropOnOverflow = false;
     double  m_timeBaseUs  = 0.0;
     std::string m_name;
 
