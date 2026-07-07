@@ -1,5 +1,6 @@
 # Build outputs
 build/
+build-*/
 bin/
 
 # Runtime artifacts
@@ -7,6 +8,9 @@ bin/
 *.csv
 
 # MSVC / Visual Studio
+*.sln
+*.vcxproj
+*.vcxproj.filters
 *.user
 *.suo
 *.sdf
