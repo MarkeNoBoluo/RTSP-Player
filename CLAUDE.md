@@ -23,16 +23,17 @@ cd bin/MSVC2017_x86_Release   # or bin/MSVC2017_x64_Release
 ```
 --url <rtsp_url>          RTSP stream URL (required; default auto-generated if omitted)
 --log <path>              Log file path (default: rtsp_player.log)
---csv <path>              CSV stats path (default: rtsp_player_stats.csv)
+--csv [path]              CSV stats path (default: rtsp_player_stats.csv; path is optional)
 --no-csv                  Disable CSV stats
 --fullscreen              Start in fullscreen mode
 --windowed                Start in windowed mode (default)
---transport <tcp|udp>     RTSP transport protocol (default: udp)
+--transport <tcp|udp>     RTSP transport protocol (default: tcp)
 --title <string>          Window title (default: "RTSP Player")
 --exit-after <seconds>    Auto-exit after N seconds
 --no-audio               Disable audio stream processing (video-only, lowest latency)
 --setpts-zero            Low-latency mode: video-only bypass if audio absent,
                          or reduced A+V queue depths (~300ms target)
+--hwaccel <auto|dxva2|none> Hardware decode (default: auto; x86 auto falls back to software)
 --help                    Show help
 ```
 
@@ -64,11 +65,24 @@ main()
  └── SDL_AddTimer callbacks push SDL_USEREVENT:
       EVENT_STATS (5s)     → PlayerStats::writeCsvRow()
       EVENT_RECONNECT      → StreamLifecycleManager::doReconnect()
+      EVENT_STREAM_EOF     → triggers application exit (pushed from DemuxThread)
 ```
 
 ### Serial mechanism
 
 A generation counter (`m_pktSerial`, `m_generation`) is incremented on reconnect and propagated to every queue and worker. All stale packets/frames with an older serial are discarded, ensuring clean pipeline restart without flushing complexity.
+
+### Reconnect & backoff
+
+On stream error, the DemuxThread callback transitions Playing→Recovering, shuts down the pipeline, and schedules a reconnect via `SDL_AddTimer`. Backoff is exponential: `1000 << min(backoffCount, 3)` → 1s, 2s, 4s, 8s (capped). On success, `backoffCount` resets to 0 and `reconnectCount`/`totalReconnectMs` are updated. On failure, another backoff cycle is scheduled. The `m_generation` counter is incremented on both `open()` and `close()` to invalidate stale work.
+
+### Hardware decode (DXVA2)
+
+Controlled via `--hwaccel` (default: `auto`). In `auto` mode, DXVA2 is attempted on x64 but **skipped on x86** (32-bit process limitation). In `dxva2` mode, failure is fatal. HW frames are transferred back to system memory via `av_hwframe_transfer_data` before entering the frame queue. Metrics: `hwDecodeEnabled`, `hwDecodedFrames`, `hwTransferFailures`, `hwTransferMaxUs`.
+
+### IRenderer abstraction
+
+[SDLRenderer.h](src/SDLRenderer.h) defines `IRenderer` (pure virtual: `init`, `displayFrame`, `setWindowSize`, `destroy`). `RTSPlayer` holds `IRenderer*`, enabling renderer substitution for testing or future backends without touching the player facade.
 
 ### Low-latency modes
 
@@ -77,8 +91,8 @@ Two latency profiles, set via `StreamLifecycleManager` parameters:
 | Mode | Trigger | Video queue | Audio queue | Ring buffer | Target latency |
 |------|---------|-------------|-------------|-------------|----------------|
 | Normal | default | 200ms | default | default | ~500-800ms |
-| Low-latency A+V | `--setpts-zero` (has audio) | 33ms | 66ms | 60ms | ~300ms |
-| Low-latency video-only | `--setpts-zero` (no audio) or `--no-audio` | 33ms | — | — | ~1 frame |
+| Low-latency A+V | `--setpts-zero` (has audio) | 67ms | 66ms | 60ms | ~300ms |
+| Low-latency video-only | `--setpts-zero` (no audio) or `--no-audio` | 67ms | — | — | ~1 frame |
 
 In video-only `--setpts-zero` mode, the render loop drains all but the latest frame before each render, and uses `m_frameTimer = nowSec` (unpaced rendering). The RTSPlayer `m_setptsZero` / `m_lowLatency` flags gate both the queue capacity selection and the render-loop pacing path.
 
@@ -132,6 +146,11 @@ Thread-safe via internal `std::mutex`. Log format: `[LEVEL] file.cpp:123 msg`.
 - **UTF-8 with BOM** (MSVC `/utf-8`)
 - No Qt, no signals/slots, no QWidget — all rendering via SDL2
 - `src/test_qt.cpp` is an orphaned Qt smoke test from v1 era — it is **not compiled** by CMakeLists.txt and should not be deleted
+
+## Further Reference
+
+- [docs/csv-metrics-reference.md](docs/csv-metrics-reference.md) — comprehensive field-by-field reference for CSV stats output (normal ranges, anomaly meanings, known issues)
+- [README.md](README.md) — Chinese-language overview
 
 ## Directory Layout
 

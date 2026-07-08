@@ -26,15 +26,16 @@ cd bin/MSVC2017_x86_Release
 |------|------|
 | `--url <url>` | RTSP 流地址（必填，未提供时自动生成默认地址） |
 | `--log <路径>` | 日志文件路径（默认 `rtsp_player.log`） |
-| `--csv <路径>` | CSV 统计文件路径（默认 `rtsp_player_stats.csv`） |
+| `--csv [路径]` | CSV 统计文件路径（默认 `rtsp_player_stats.csv`，路径可选） |
 | `--no-csv` | 禁用 CSV 统计输出 |
 | `--fullscreen` | 启动时全屏 |
 | `--windowed` | 启动时窗口模式（默认） |
-| `--transport <tcp\|udp>` | RTSP 传输协议（默认 `udp`） |
+| `--transport <tcp\|udp>` | RTSP 传输协议（默认 `tcp`） |
 | `--title <标题>` | 窗口标题（默认 `"RTSP Player"`） |
 | `--exit-after <秒>` | 指定秒数后自动退出 |
 | `--no-audio` | 禁用音频，纯视频模式（延迟最低） |
 | `--setpts-zero` | 低延迟模式：无音频时逐帧直出，有音频时缩减队列深度（延迟约 300ms） |
+| `--hwaccel <auto\|dxva2\|none>` | 硬件解码模式（默认 `auto`，x86 下 auto 自动降级为软件解码） |
 | `--help` | 显示帮助信息 |
 
 旧式位置参数形式（`argv[1]`=url, `argv[2]`=log）仍可用但已废弃。
@@ -75,8 +76,8 @@ main()
 | 模式 | 触发方式 | 视频队列 | 音频队列 | 环形缓冲 | 目标延迟 |
 |------|----------|----------|----------|----------|----------|
 | 正常 | 默认 | 200ms | 默认 | 默认 | ~500-800ms |
-| 低延迟 A+V | `--setpts-zero`（有音频） | 33ms | 66ms | 60ms | ~300ms |
-| 低延迟纯视频 | `--setpts-zero`（无音频）或 `--no-audio` | 33ms | — | — | ~1 帧 |
+| 低延迟 A+V | `--setpts-zero`（有音频） | 67ms | 66ms | 60ms | ~300ms |
+| 低延迟纯视频 | `--setpts-zero`（无音频）或 `--no-audio` | 67ms | — | — | ~1 帧 |
 
 ## 音视频同步
 
