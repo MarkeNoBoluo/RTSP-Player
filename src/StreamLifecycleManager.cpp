@@ -486,6 +486,14 @@ static Uint32 onReconnectTimer(Uint32 interval, void* param) {
 }
 
 void StreamLifecycleManager::scheduleReconnect() {
+    if (m_backoffCount >= kMaxBackoffAttempts) {
+        LOG_ERROR("Max reconnect attempts (%d) exhausted, giving up", kMaxBackoffAttempts);
+        m_stateMachine->forceState(PlayerState::Error);
+        if (m_onState) m_onState(PlayerState::Error);
+        if (m_onError) m_onError("Max reconnect attempts exhausted");
+        return;
+    }
+
     m_stateMachine->transition(PlayerState::Recovering, PlayerState::Reconnecting);
     if (m_onState) m_onState(PlayerState::Reconnecting);
 

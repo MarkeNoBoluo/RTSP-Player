@@ -93,6 +93,7 @@ private:
     std::atomic<int>     m_pktSerial{0};
 
     int                  m_reconnectTimerId = 0;
+    static constexpr int kMaxBackoffAttempts = 3;
     int                  m_backoffCount     = 0;
     int64_t              m_videoQueueCapacityMs = 200;
     int64_t              m_lowLatencyVideoQueueCapacityMs = 67;

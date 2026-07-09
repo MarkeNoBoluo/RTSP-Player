@@ -72,8 +72,8 @@ void DemuxThread::run() {
 
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
-                LOG_INFO("av_read_frame returned EOF");
-                if (m_onEndOfStream) m_onEndOfStream();
+                LOG_INFO("av_read_frame returned EOF, triggering reconnect");
+                if (m_onStreamError) m_onStreamError();
                 break;
             }
             if (m_abort) break;
