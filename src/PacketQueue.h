@@ -22,7 +22,7 @@ public:
     ~PacketQueue();
 
     void init(AVRational timeBase, int capacityMs = 200, const char* name = "",
-              bool dropOnOverflow = false);
+              bool dropOnOverflow = false, bool keyframeAware = false);
     bool push(AVPacket* pkt, int serial = 0);
     bool pop(AVPacket* pkt, int timeoutMs);
     void flush();
@@ -32,6 +32,10 @@ public:
 
     // Returns true if a key frame was dropped since last check (clears flag)
     bool checkKeyFrameDropped();
+
+    // Returns true if a GOP-level discontinuity occurred (entire queue dropped on overflow).
+    // Consumer must flush the decoder before sending the next packet.
+    bool consumeDiscontinuity();
 
     // Thread-safe: locks, reads peak values, resets to 0
     void drainPeak(int& outDurationMs, int& outSize);
@@ -56,6 +60,9 @@ private:
     std::condition_variable m_cond;
     std::atomic<bool>       m_abort{false};
     std::atomic<bool>       m_keyFrameDropped{false};
+    bool                    m_keyframeAware = false;
+    bool                    m_waitingForKeyframe = false;  // protected by m_mutex
+    std::atomic<bool>       m_discontinuity{false};
     int64_t                 m_totalDurationUs = 0;
     int                     m_peakDurationMs = 0;
     int                     m_peakSize = 0;

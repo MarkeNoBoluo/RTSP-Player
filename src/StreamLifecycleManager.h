@@ -95,8 +95,8 @@ private:
     int                  m_reconnectTimerId = 0;
     static constexpr int kMaxBackoffAttempts = 3;
     int                  m_backoffCount     = 0;
-    int64_t              m_videoQueueCapacityMs = 200;
-    int64_t              m_lowLatencyVideoQueueCapacityMs = 67;
+    int64_t              m_videoQueueCapacityMs = 67;
+    int64_t              m_lowLatencyVideoQueueCapacityMs = 200;
     int64_t              m_lowLatencyAudioQueueCapacityMs = 66;
     int64_t              m_lowLatencyAudioRingBufferMs = 60;
     bool                 m_audioEnabled     = true;

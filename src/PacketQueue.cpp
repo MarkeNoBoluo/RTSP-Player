@@ -9,15 +9,17 @@ PacketQueue::~PacketQueue() {
 }
 
 void PacketQueue::init(AVRational timeBase, int capacityMs, const char* name,
-                       bool dropOnOverflow) {
+                       bool dropOnOverflow, bool keyframeAware) {
     assert(!m_initialized);
     m_initialized = true;
     m_capacityMs  = capacityMs;
     m_dropOnOverflow = dropOnOverflow;
+    m_keyframeAware = keyframeAware;
     m_timeBaseUs  = av_q2d(timeBase) * 1000000.0;
     m_name        = name ? name : "";
-    LOG_DEBUG("PacketQueue[%s] initialized: capacity=%dms, timeBase=%f, dropOnOverflow=%s",
-              m_name.c_str(), capacityMs, m_timeBaseUs, dropOnOverflow ? "yes" : "no");
+    LOG_DEBUG("PacketQueue[%s] initialized: capacity=%dms, timeBase=%f, dropOnOverflow=%s, keyframeAware=%s",
+              m_name.c_str(), capacityMs, m_timeBaseUs, dropOnOverflow ? "yes" : "no",
+              keyframeAware ? "yes" : "no");
 }
 
 bool PacketQueue::push(AVPacket* pkt, int serial) {
@@ -26,6 +28,15 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
     int64_t durUs = 0;
     if (pkt->duration > 0) {
         durUs = static_cast<int64_t>(pkt->duration * m_timeBaseUs);
+    }
+
+    // Keyframe-aware: discard non-keyframes while waiting for next IDR after GOP drop
+    if (m_keyframeAware && m_waitingForKeyframe) {
+        if (!(pkt->flags & AV_PKT_FLAG_KEY)) {
+            return false;
+        }
+        m_waitingForKeyframe = false;
+        LOG_INFO("PacketQueue[%s] resumed at keyframe", m_name.c_str());
     }
 
     while (!m_queue.empty() && m_totalDurationUs + durUs > m_capacityMs * 1000LL) {
@@ -38,7 +49,28 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
             return false;
         }
 
-        auto it = m_queue.begin();
+        // Keyframe-aware: after 100ms wait, if still overflowed, clear entire GOP
+        if (m_keyframeAware) {
+            while (!m_queue.empty()) {
+                av_packet_free(&m_queue.front().pkt);
+                m_queue.pop_front();
+            }
+            m_totalDurationUs = 0;
+            m_discontinuity.store(true, std::memory_order_release);
+
+            if (!(pkt->flags & AV_PKT_FLAG_KEY)) {
+                m_waitingForKeyframe = true;
+                LOG_WARN("PacketQueue[%s] overflow after wait: waiting for keyframe",
+                         m_name.c_str());
+                return false;
+            }
+
+            LOG_WARN("PacketQueue[%s] overflow after wait: resumed at keyframe",
+                     m_name.c_str());
+            break;
+        }
+
+        // Non-keyframe-aware: selective single-packet drop
         bool dropped = false;
 
         for (auto iter = m_queue.begin(); iter != m_queue.end(); ++iter) {
@@ -47,7 +79,9 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
                 av_packet_free(&iter->pkt);
                 m_queue.erase(iter);
                 dropped = true;
-                LOG_WARN("PacketQueue[%s] dropping non-key frame, queue=%dms", m_name.c_str(), m_totalDurationUs / 1000);
+                LOG_WARN("PacketQueue[%s] dropping non-key frame, queue=%dms",
+                         m_name.c_str(),
+                         static_cast<int>(m_totalDurationUs / 1000));
                 break;
             }
         }
@@ -57,7 +91,9 @@ bool PacketQueue::push(AVPacket* pkt, int serial) {
             av_packet_free(&m_queue.front().pkt);
             m_queue.pop_front();
             m_keyFrameDropped.store(true, std::memory_order_release);
-            LOG_WARN("PacketQueue[%s] dropping oldest key frame, queue=%dms", m_name.c_str(), m_totalDurationUs / 1000);
+            LOG_WARN("PacketQueue[%s] dropping oldest key frame, queue=%dms",
+                     m_name.c_str(),
+                     static_cast<int>(m_totalDurationUs / 1000));
         }
     }
 
@@ -114,6 +150,8 @@ void PacketQueue::flush() {
     m_peakSize = 0;
     m_initialized = false;
     m_abort = false;
+    m_waitingForKeyframe = false;
+    m_discontinuity.store(false, std::memory_order_release);
     m_cond.notify_all();
 }
 
@@ -134,6 +172,10 @@ int PacketQueue::durationMs() const {
 
 bool PacketQueue::checkKeyFrameDropped() {
     return m_keyFrameDropped.exchange(false, std::memory_order_acq_rel);
+}
+
+bool PacketQueue::consumeDiscontinuity() {
+    return m_discontinuity.exchange(false, std::memory_order_acq_rel);
 }
 
 void PacketQueue::drainPeak(int& outDurationMs, int& outSize) {

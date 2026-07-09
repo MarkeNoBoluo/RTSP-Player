@@ -124,9 +124,9 @@ void VideoDecodeThread::run() {
             LOG_INFO("VideoDecode: serial changed to %d, flushing decoder", curSerial);
         }
 
-        // If IDR was dropped from queue, flush decoder to prevent corruption
-        if (m_queue->checkKeyFrameDropped()) {
-            LOG_WARN("VideoDecode: IDR was dropped, flushing decoder");
+        // If queue overflow caused GOP drop, flush decoder to start clean from next IDR
+        if (m_queue->consumeDiscontinuity()) {
+            LOG_WARN("VideoDecode: stream discontinuity, flushing decoder");
             avcodec_flush_buffers(m_codecCtx);
         }
 

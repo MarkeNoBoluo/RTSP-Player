@@ -188,7 +188,7 @@ bool StreamLifecycleManager::initDemux(const char* url) {
         int64_t videoQueueCapacityMs = m_lowLatency
             ? m_lowLatencyVideoQueueCapacityMs
             : m_videoQueueCapacityMs;
-        m_videoQueue->init(m_videoStream->time_base, static_cast<int>(videoQueueCapacityMs), "video", false);
+        m_videoQueue->init(m_videoStream->time_base, static_cast<int>(videoQueueCapacityMs), "video", false, true);
         LOG_INFO("Video stream: index=%d, codec=%d, %dx%d",
                  videoIdx, m_videoCodecPar->codec_id,
                  m_videoCodecPar->width, m_videoCodecPar->height);
